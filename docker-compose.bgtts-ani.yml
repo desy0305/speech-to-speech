@@ -11,6 +11,13 @@ services:
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
       HF_TOKEN: ${HF_TOKEN:-}
+      ANI_VOICE_STYLE: ${ANI_VOICE_STYLE:-F5}
+      ANI_VOICE_SPEED: ${ANI_VOICE_SPEED:-1.6}
+      ANI_VOICE_PRELOAD: ${ANI_VOICE_PRELOAD:-true}
+      ANI_VOICE_CACHE_SPEAKER: ${ANI_VOICE_CACHE_SPEAKER:-true}
+      ANI_VOICE_WARMUP_TEXT: ${ANI_VOICE_WARMUP_TEXT:-Здравейте.}
+      ANI_VOICE_REFERENCE_TEXT: ${ANI_VOICE_REFERENCE_TEXT:-Здравейте, радвам се да ви помогна.}
+      ANI_VOICE_TIMING_LOGS: ${ANI_VOICE_TIMING_LOGS:-true}
     ports:
       - "${ANI_VOICE_PORT:-8001}:8000/tcp"
     volumes:
@@ -67,7 +74,53 @@ services:
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
       LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-lm-studio}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
       HF_TOKEN: ${HF_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BGGPT_API_KEY: ${BGGPT_API_KEY:-}
+      LLM_PROVIDERS_JSON: >-
+        [
+          {
+            "id": "lmstudio",
+            "label": "LM Studio",
+            "baseUrl": "${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}",
+            "apiKeyEnv": "LM_STUDIO_API_KEY",
+            "reasoningEffort": "none",
+            "models": [
+              { "id": "${LM_STUDIO_MODEL:-google/gemma-4-12b-qat}", "label": "${LM_STUDIO_MODEL:-google/gemma-4-12b-qat}" }
+            ]
+          },
+          {
+            "id": "cerebras",
+            "label": "Cerebras",
+            "baseUrl": "${CEREBRAS_BASE_URL:-https://api.cerebras.ai/v1}",
+            "apiKeyEnv": "CEREBRAS_API_KEY",
+            "reasoningEffort": "none",
+            "models": [
+              { "id": "${CEREBRAS_MODEL:-gemma-4-31b}", "label": "${CEREBRAS_MODEL:-gemma-4-31b}" }
+            ]
+          },
+          {
+            "id": "gemini",
+            "label": "Gemini",
+            "baseUrl": "${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}",
+            "apiKeyEnv": "GEMINI_API_KEY",
+            "reasoningEffort": "low",
+            "models": [
+              { "id": "${GEMINI_MODEL:-gemini-3.5-flash}", "label": "${GEMINI_MODEL:-gemini-3.5-flash}" }
+            ]
+          },
+          {
+            "id": "bggpt",
+            "label": "BGGPT",
+            "baseUrl": "${BGGPT_URL:-https://api.bggpt.ai/v1}",
+            "apiKeyEnv": "BGGPT_API_KEY",
+            "models": [
+              { "id": "${BGGPT_MODEL:-bggpt-gemma-3-27b}", "label": "${BGGPT_MODEL:-bggpt-gemma-3-27b}" },
+              { "id": "bggpt-gemma-3-27b-fp8", "label": "bggpt-gemma-3-27b-fp8" }
+            ]
+          }
+        ]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

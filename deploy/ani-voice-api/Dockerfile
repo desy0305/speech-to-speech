@@ -49,6 +49,8 @@ RUN python -m pip install --no-cache-dir \
         "pydantic>=2.7.0" \
         "requests>=2.31.0"
 
+COPY tts_engine.py /opt/ani-voice-api/tts_engine.py
+
 EXPOSE 8000
 
 CMD ["python", "api.py"]

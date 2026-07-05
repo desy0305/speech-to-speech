@@ -1,0 +1,81 @@
+name: speech-to-speech-bgtts-ani
+
+services:
+  ani-voice-api:
+    profiles: ["bgtts-ani"]
+    build:
+      context: ./deploy/ani-voice-api
+      args:
+        ANI_VOICE_REV: ${ANI_VOICE_REV:-91722a7fdd404cca1818ace44038ed43322fc66e}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      TORCH_HOME: /root/.cache/torch
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "${ANI_VOICE_PORT:-8001}:8000/tcp"
+    volumes:
+      - ./cache:/root/.cache
+    gpus: all
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 10m
+    restart: unless-stopped
+
+  backend-lmstudio-bgtts:
+    profiles: ["bgtts-ani"]
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile}
+    command:
+      - speech-to-speech
+      - --mode
+      - realtime
+      - --ws_host
+      - 0.0.0.0
+      - --ws_port
+      - "8765"
+      - --stt
+      - parakeet-tdt
+      - --tts
+      - ani-voice
+      - --ani_voice_api_url
+      - ${ANI_VOICE_API_URL:-http://ani-voice-api:8000}
+      - --ani_voice_style
+      - ${ANI_VOICE_STYLE:-F5}
+      - --ani_voice_speed
+      - ${ANI_VOICE_SPEED:-1.6}
+      - --ani_voice_timeout_s
+      - ${ANI_VOICE_TIMEOUT_S:-120}
+      - --ani_voice_blocksize
+      - ${ANI_VOICE_BLOCKSIZE:-512}
+      - --llm_backend
+      - chat-completions
+      - --model_name
+      - ${LM_STUDIO_MODEL:-google/gemma-4-12b-qat}
+      - --responses_api_base_url
+      - ${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+      - --responses_api_api_key
+      - ${LM_STUDIO_API_KEY:-lm-studio}
+      - --responses_api_reasoning_effort
+      - none
+      - --init_chat_prompt
+      - ${S2S_SYSTEM_PROMPT:-You are a helpful voice assistant. Keep replies short, warm, and spoken.}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      TORCH_HOME: /root/.cache/torch
+      LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-lm-studio}
+      HF_TOKEN: ${HF_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${S2S_BG_PORT:-8766}:8765/tcp"
+    volumes:
+      - ./cache:/root/.cache
+    depends_on:
+      ani-voice-api:
+        condition: service_healthy
+    gpus: all
+    restart: unless-stopped

@@ -33,6 +33,7 @@ def _run_installed_cli_help() -> None:
 
 def _validate_package_defaults() -> None:
     import speech_to_speech
+    from speech_to_speech.arguments_classes.ani_voice_tts_arguments import AniVoiceTTSHandlerArguments
     from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
     from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
     from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
@@ -43,6 +44,7 @@ def _validate_package_defaults() -> None:
     module_args = ModuleArguments()
     responses_api_args = ResponsesApiLanguageModelHandlerArguments()
     qwen3_args = Qwen3TTSHandlerArguments()
+    ani_voice_args = AniVoiceTTSHandlerArguments()
     vad_args = VADHandlerArguments()
 
     assert module_args.mode == "realtime"
@@ -61,6 +63,11 @@ def _validate_package_defaults() -> None:
     assert qwen3_args.qwen3_tts_non_streaming_mode is True
     assert qwen3_args.qwen3_tts_ref_audio is None
     assert qwen3_args.qwen3_tts_mlx_quantization == "6bit"
+    assert ani_voice_args.ani_voice_api_url == "http://ani-voice-api:8000"
+    assert ani_voice_args.ani_voice_style == "F5"
+    assert ani_voice_args.ani_voice_speed == 1.6
+    assert ani_voice_args.ani_voice_timeout_s == 120.0
+    assert ani_voice_args.ani_voice_blocksize == 512
     assert vad_args.thresh == 0.6
     assert vad_args.min_silence_ms == 64
     assert vad_args.min_speech_ms == 384

@@ -1,6 +1,7 @@
 import sys
 from dataclasses import fields
 
+from speech_to_speech.arguments_classes.ani_voice_tts_arguments import AniVoiceTTSHandlerArguments
 from speech_to_speech.arguments_classes.chat_tts_arguments import ChatTTSHandlerArguments
 from speech_to_speech.arguments_classes.facebookmms_tts_arguments import FacebookMMSTTSHandlerArguments
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import FasterWhisperSTTHandlerArguments
@@ -28,6 +29,7 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_realtime_profile():
     vad_args = VADHandlerArguments()
     responses_api_args = ResponsesApiLanguageModelHandlerArguments()
     qwen3_args = Qwen3TTSHandlerArguments()
+    ani_voice_args = AniVoiceTTSHandlerArguments()
 
     assert module_args.mode == "realtime"
     assert module_args.stt == "parakeet-tdt"
@@ -52,6 +54,11 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_realtime_profile():
     assert qwen3_args.qwen3_tts_non_streaming_mode is True
     assert qwen3_args.qwen3_tts_ref_audio is None
     assert qwen3_args.qwen3_tts_mlx_quantization == "6bit"
+    assert ani_voice_args.ani_voice_api_url == "http://ani-voice-api:8000"
+    assert ani_voice_args.ani_voice_style == "F5"
+    assert ani_voice_args.ani_voice_speed == 1.6
+    assert ani_voice_args.ani_voice_timeout_s == 120.0
+    assert ani_voice_args.ani_voice_blocksize == 512
 
 
 # -- ParsedArguments dataclass tests ------------------------------------------
@@ -74,6 +81,7 @@ EXPECTED_FIELD_TYPES = {
     "pocket_tts_handler_kwargs": PocketTTSHandlerArguments,
     "kokoro_tts_handler_kwargs": KokoroTTSHandlerArguments,
     "qwen3_tts_handler_kwargs": Qwen3TTSHandlerArguments,
+    "ani_voice_tts_handler_kwargs": AniVoiceTTSHandlerArguments,
 }
 
 
@@ -114,6 +122,36 @@ def test_parse_arguments_accepts_qwen3_tts_backend_override():
         sys.argv = original_argv
 
     assert args.qwen3_tts_handler_kwargs.qwen3_tts_backend == "torch"
+
+
+def test_parse_arguments_accepts_ani_voice_tts_backend_override():
+    original_argv = sys.argv[:]
+    try:
+        sys.argv = [
+            "speech-to-speech",
+            "--tts",
+            "ani-voice",
+            "--ani_voice_api_url",
+            "http://localhost:8000",
+            "--ani_voice_style",
+            "F3",
+            "--ani_voice_speed",
+            "1.25",
+            "--ani_voice_timeout_s",
+            "30",
+            "--ani_voice_blocksize",
+            "256",
+        ]
+        args = parse_arguments()
+    finally:
+        sys.argv = original_argv
+
+    assert args.module_kwargs.tts == "ani-voice"
+    assert args.ani_voice_tts_handler_kwargs.ani_voice_api_url == "http://localhost:8000"
+    assert args.ani_voice_tts_handler_kwargs.ani_voice_style == "F3"
+    assert args.ani_voice_tts_handler_kwargs.ani_voice_speed == 1.25
+    assert args.ani_voice_tts_handler_kwargs.ani_voice_timeout_s == 30.0
+    assert args.ani_voice_tts_handler_kwargs.ani_voice_blocksize == 256
 
 
 def test_parse_arguments_transformers_backend():

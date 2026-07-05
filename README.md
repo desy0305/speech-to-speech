@@ -55,6 +55,7 @@ The pipeline provides a fully open and modular approach, with a focus on leverag
 - [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) - Streaming TTS with voice cloning from Kyutai Labs
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - Fast and high-quality TTS optimized for Apple Silicon
 - [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
+- [Ani Voice API](https://huggingface.co/beleata74/Ani-Voice-API) - Experimental Bulgarian TTS sidecar via `--tts ani-voice`
 
 ## Setup
 

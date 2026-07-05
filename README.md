@@ -59,6 +59,22 @@ The pipeline provides a fully open and modular approach, with a focus on leverag
 
 ## Setup
 
+### Full Local Docker Stack
+
+This fork's `main` branch includes the backend, the vendored realtime voice UI
+in `apps/hf-realtime-voice-space/`, local provider routing, Docker MCP gateway
+helpers, and the experimental Ani Bulgarian TTS sidecar.
+
+For a production-like local deployment from one clone:
+
+```bash
+cp .env.local.example .env
+docker compose -f docker-compose.local.yml --profile lmstudio up --build
+```
+
+See [`docs/local-docker-full-stack.md`](docs/local-docker-full-stack.md) for
+LM Studio, Cerebras, Gemini/BGGPT, web search, MCP, and Bulgarian TTS profiles.
+
 Install the default package from PyPI:
 ```bash
 pip install speech-to-speech

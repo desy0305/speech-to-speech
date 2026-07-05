@@ -287,8 +287,17 @@ class ResponseHandler(RealtimeBaseHandler):
                 return []
         st = self._state(conn_id)
         events: list[ServerEvent] = []
+        need_created = st.current_response_id is None
         resp_id, item_id = self._ensure_response(conn_id)
         st.last_item_id = item_id
+        if need_created:
+            events.append(
+                ResponseCreatedEvent(
+                    type="response.created",
+                    event_id=self._next_event_id(),
+                    response=self._build_response(conn_id, "in_progress"),
+                )
+            )
         output_idx = 0
         if event.text:
             if response_wants_audio(st.current_response_params):

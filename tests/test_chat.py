@@ -689,6 +689,16 @@ class TestToTransformersChat:
         assert tc["function"]["name"] == "search"
         assert tc["function"]["arguments"] == {"query": "test"}
 
+    def test_function_call_preserves_provider_extra_content(self):
+        chat = Chat(size=5)
+        fc = _fc("c1", "search", '{"query": "test"}')
+        fc.model_extra["extra_content"] = {"google": {"thought_signature": "sig"}}
+        chat.add_item(fc)
+        chat.add_item(_fco("c1", "ok"))
+        result = chat.to_transformers_chat()
+        tc = result[0]["tool_calls"][0]
+        assert tc["extra_content"] == {"google": {"thought_signature": "sig"}}
+
     def test_function_call_invalid_json_falls_back(self):
         chat = Chat(size=5)
         chat.add_item(_fc("c1", "broken", "not valid json"))

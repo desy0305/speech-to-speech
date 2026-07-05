@@ -398,12 +398,15 @@ class Chat:
                         args = json.loads(args) if isinstance(args, str) else args
                     except (json.JSONDecodeError, TypeError):
                         args = {}
+                    item_extra = getattr(item, "model_extra", None) or {}
+                    extra_content = item_extra.get("extra_content")
                     messages.append(
                         TransformersFunctionCallMessage(
                             tool_calls=[
                                 TransformersToolCall(
                                     id=item.call_id,
                                     function=TransformersToolCallFunction(name=item.name, arguments=args),
+                                    extra_content=extra_content if isinstance(extra_content, dict) else None,
                                 )
                             ]
                         )
@@ -425,7 +428,7 @@ class Chat:
                             content=item.output,
                         )
                     )
-            return [m.model_dump() for m in messages]
+            return [m.model_dump(exclude_none=True) for m in messages]
 
     def copy(self) -> Chat:
         """Return a shallow snapshot safe for concurrent read access."""
@@ -642,6 +645,7 @@ class TransformersToolCall(BaseModel):
     type: Literal["function"] = "function"
     id: str
     function: TransformersToolCallFunction
+    extra_content: dict[str, Any] | None = None
 
 
 class TransformersSystemMessage(BaseModel):

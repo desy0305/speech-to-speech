@@ -40,6 +40,19 @@ from speech_to_speech.utils.utils import _generate_id
 logger = logging.getLogger(__name__)
 
 
+def _extra_content_from_tool_call(tool_call: Any) -> dict[str, Any] | None:
+    extra = getattr(tool_call, "model_extra", None) or {}
+    extra_content = extra.get("extra_content")
+    if isinstance(extra_content, dict):
+        return extra_content
+    if hasattr(tool_call, "model_dump"):
+        dumped = tool_call.model_dump(exclude_none=True)
+        extra_content = dumped.get("extra_content")
+        if isinstance(extra_content, dict):
+            return extra_content
+    return None
+
+
 def _to_chat_tools(req_tools: Any) -> list[ChatCompletionToolParam] | None:
     """Convert Responses-API function tools to Chat-Completions tool format.
 
@@ -209,7 +222,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         # Accumulate streamed tool-call deltas, keyed by their stream index, and the
         # raw assistant text, then emit assistant message + tool calls + usage once
         # the stream is exhausted.
-        tool_accum: dict[int, dict[str, str]] = {}
+        tool_accum: dict[int, dict[str, Any]] = {}
         usage: Usage | None = None
         raw_text = ""
         for chunk in api_response:
@@ -223,9 +236,12 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             delta = chunk.choices[0].delta
             if delta.tool_calls:
                 for tc in delta.tool_calls:
-                    entry = tool_accum.setdefault(tc.index, {"name": "", "args": "", "id": ""})
+                    entry = tool_accum.setdefault(tc.index, {"name": "", "args": "", "id": "", "extra_content": None})
                     if tc.id:
                         entry["id"] = tc.id
+                    extra_content = _extra_content_from_tool_call(tc)
+                    if extra_content is not None:
+                        entry["extra_content"] = extra_content
                     if tc.function is not None:
                         if tc.function.name:
                             entry["name"] = tc.function.name
@@ -259,17 +275,18 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         if raw_content:
             yield AssistantMessage(content=[AssistantContent(type="output_text", text=raw_content)])
             yield TextDelta(text=raw_content)
-        tool_accum: dict[int, dict[str, str]] = {}
+        tool_accum: dict[int, dict[str, Any]] = {}
         for tc in message.tool_calls or []:
             tool_accum[len(tool_accum)] = {
                 "name": tc.function.name or "",
                 "args": tc.function.arguments or "",
                 "id": tc.id or "",
+                "extra_content": _extra_content_from_tool_call(tc),
             }
         yield from self._tool_calls_from_accum(tool_accum)
 
     @staticmethod
-    def _tool_calls_from_accum(tool_accum: dict[int, dict[str, str]]) -> Iterator[ToolCall]:
+    def _tool_calls_from_accum(tool_accum: dict[int, dict[str, Any]]) -> Iterator[ToolCall]:
         """Turn accumulated tool-call deltas into ToolCall events.
 
         IDs are regenerated (mirroring the Responses handler) so the rest of the
@@ -279,6 +296,9 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             entry = tool_accum[index]
             if not entry["name"]:
                 continue
+            extra_fields: dict[str, Any] = {}
+            if isinstance(entry.get("extra_content"), dict):
+                extra_fields["extra_content"] = entry["extra_content"]
             yield ToolCall(
                 item=ResponseFunctionToolCall(
                     type="function_call",
@@ -287,6 +307,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
                     call_id=_generate_id("call"),
                     id=_generate_id("fc"),
                     status="completed",
+                    **extra_fields,
                 )
             )
 

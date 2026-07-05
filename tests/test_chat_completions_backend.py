@@ -115,8 +115,11 @@ def _chunk(content=None, tool_calls=None, usage=None):
     return SimpleNamespace(choices=choices, usage=usage)
 
 
-def _tc_delta(index, id=None, name=None, arguments=None):
-    return SimpleNamespace(index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments))
+def _tc_delta(index, id=None, name=None, arguments=None, extra_content=None):
+    tool_call = SimpleNamespace(index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments))
+    if extra_content is not None:
+        tool_call.model_extra = {"extra_content": extra_content}
+    return tool_call
 
 
 def _drive(
@@ -301,6 +304,28 @@ def test_streaming_tool_call_accumulates_arguments():
     assert chat._pending_tool_calls, "tool call should be recorded in chat history"
 
 
+def test_streaming_tool_call_preserves_provider_extra_content():
+    h = _make_handler(stream=True)
+    extra_content = {"google": {"thought_signature": "sig"}}
+    h.client.chat.completions.create = lambda **k: _FakeStream(
+        [_chunk(tool_calls=[_tc_delta(0, id="srv_1", name="search", arguments='{"q":"x"}', extra_content=extra_content)])]
+    )
+    _text, tools, _usage, chat, _end = _drive(
+        h,
+        tools=[{"type": "function", "name": "search", "parameters": {"type": "object"}}],
+        tool_choice="required",
+    )
+    assert len(tools) == 1
+    assert tools[0].model_extra["extra_content"] == extra_content
+    call_id = tools[0].call_id
+    stored_call = chat._pending_tool_calls[call_id]
+    assert stored_call.model_extra["extra_content"] == extra_content
+    chat.add_item(RealtimeConversationItemFunctionCallOutput(type="function_call_output", call_id=call_id, output="ok"))
+    messages = ChatCompletionsApiModelHandler._chat_messages(chat)
+    tool_call_message = [m for m in messages if m.get("tool_calls")][0]
+    assert tool_call_message["tool_calls"][0]["extra_content"] == extra_content
+
+
 def test_tool_call_recorded_before_chunk_is_emitted():
     """Regression: a fast client can return function_call_output before the
     deferred end-of-turn write-back runs. The call must already be in history
@@ -365,6 +390,28 @@ def test_non_streaming_tool_call():
     assert len(tools) == 1 and tools[0].name == "move_head"
     assert json.loads(tools[0].arguments) == {"direction": "right"}
     assert usage == (7, 3)
+
+
+def test_non_streaming_tool_call_preserves_provider_extra_content():
+    h = _make_handler(stream=False)
+    extra_content = {"google": {"thought_signature": "sig"}}
+    tool_call = SimpleNamespace(
+        id="srv_9",
+        function=SimpleNamespace(name="search", arguments='{"q":"x"}'),
+        model_extra={"extra_content": extra_content},
+    )
+    h.client.chat.completions.create = lambda **k: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=[tool_call]))],
+        usage=SimpleNamespace(prompt_tokens=7, completion_tokens=3),
+    )
+    _text, tools, _usage, chat, _end = _drive(
+        h,
+        tools=[{"type": "function", "name": "search", "parameters": {"type": "object"}}],
+        tool_choice="required",
+    )
+    assert tools[0].model_extra["extra_content"] == extra_content
+    stored_call = chat._pending_tool_calls[tools[0].call_id]
+    assert stored_call.model_extra["extra_content"] == extra_content
 
 
 def test_streaming_refusal_is_spoken_and_stored():

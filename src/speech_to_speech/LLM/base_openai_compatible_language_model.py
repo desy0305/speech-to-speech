@@ -471,6 +471,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         Out-of-band turns never touch the default conversation, and a stale turn
         records nothing (it is not forwarded to the client either)."""
         state.tools.append(item)
+        item_extra = getattr(item, "model_extra", None) or {}
+        extra_fields: dict[str, Any] = {}
+        if isinstance(item_extra.get("extra_content"), dict):
+            extra_fields["extra_content"] = item_extra["extra_content"]
         fc_item = RealtimeConversationItemFunctionCall(
             type="function_call",
             name=item.name,
@@ -478,6 +482,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             call_id=item.call_id,
             id=item.id,
             status=item.status,
+            **extra_fields,
         )
         if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
             logger.info("LLM generation cancelled (stale speculative turn)")

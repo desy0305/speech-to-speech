@@ -105,7 +105,7 @@ MCP_ALLOWED_TOOLS = {
     item.strip()
     for item in os.environ.get(
         "MCP_ALLOWED_TOOLS",
-        "mcp-find,mcp-add,mcp-remove,mcp-exec,mcp-config-set,mcp-create-profile,mcp-activate-profile,browser_navigate,browser_snapshot,browser_console_messages,browser_network_requests,browser_network_request,browser_take_screenshot,browser_wait_for,browser_click,browser_type,browser_select_option,browser_press_key,browser_fill_form,search_nodes,open_nodes,create_entities,create_relations,add_observations",
+        "mcp-find,mcp-add,mcp-remove,mcp-exec,mcp-config-set,mcp-create-profile,mcp-activate-profile,browser_navigate,browser_snapshot,browser_console_messages,browser_network_requests,browser_network_request,browser_take_screenshot,browser_wait_for,browser_click,browser_type,browser_select_option,browser_press_key,browser_fill_form,search_nodes,open_nodes,create_entities,create_relations,add_observations,sequentialthinking",
     ).split(",")
     if item.strip()
 }
@@ -724,6 +724,136 @@ def _safe_screenshot_filename(value: object) -> str:
     return filename
 
 
+def _string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _memory_property_observations(properties: object) -> list[str]:
+    if not isinstance(properties, dict):
+        return []
+    observations = []
+    for key, value in properties.items():
+        clean_key = str(key).strip()
+        if not clean_key:
+            continue
+        if isinstance(value, (dict, list)):
+            clean_value = json.dumps(value, ensure_ascii=False)
+        else:
+            clean_value = str(value).strip()
+        if clean_value:
+            observations.append(f"{clean_key}: {clean_value}")
+    return observations
+
+
+def _normalize_memory_entity(entity: object) -> dict[str, object]:
+    if not isinstance(entity, dict):
+        raise HTTPException(status_code=400, detail="Memory entity must be an object.")
+    name = str(entity.get("name") or entity.get("entityName") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Memory entity name is required.")
+    entity_type = str(entity.get("entityType") or entity.get("type") or entity.get("category") or "memory").strip()
+    observations = _string_list(entity.get("observations") or entity.get("contents") or entity.get("notes"))
+    observations.extend(_memory_property_observations(entity.get("properties")))
+    return {
+        "name": name,
+        "entityType": entity_type or "memory",
+        "observations": observations,
+    }
+
+
+def _normalize_memory_relation(relation: object) -> dict[str, str]:
+    if not isinstance(relation, dict):
+        raise HTTPException(status_code=400, detail="Memory relation must be an object.")
+    source = str(relation.get("from") or relation.get("source") or relation.get("subject") or "").strip()
+    target = str(relation.get("to") or relation.get("target") or relation.get("object") or "").strip()
+    relation_type = str(relation.get("relationType") or relation.get("relation") or relation.get("type") or "").strip()
+    if not source or not target or not relation_type:
+        raise HTTPException(status_code=400, detail="Memory relation requires from, to, and relationType.")
+    return {"from": source, "to": target, "relationType": relation_type}
+
+
+def _normalize_memory_observation(observation: object) -> dict[str, object]:
+    if not isinstance(observation, dict):
+        raise HTTPException(status_code=400, detail="Memory observation must be an object.")
+    entity_name = str(observation.get("entityName") or observation.get("name") or observation.get("entity") or "").strip()
+    contents = _string_list(
+        observation.get("contents")
+        or observation.get("observations")
+        or observation.get("addedObservations")
+        or observation.get("content")
+        or observation.get("text")
+    )
+    if not entity_name or not contents:
+        raise HTTPException(status_code=400, detail="Memory observation requires entityName and contents.")
+    return {"entityName": entity_name, "contents": contents}
+
+
+def _normalize_memory_arguments(name: str, arguments: dict) -> dict:
+    clean = dict(arguments)
+    if name == "create_entities":
+        entities = clean.get("entities")
+        if not isinstance(entities, list):
+            raise HTTPException(status_code=400, detail="create_entities requires an entities array.")
+        clean["entities"] = [_normalize_memory_entity(entity) for entity in entities]
+    elif name == "create_relations":
+        relations = clean.get("relations")
+        if not isinstance(relations, list):
+            raise HTTPException(status_code=400, detail="create_relations requires a relations array.")
+        clean["relations"] = [_normalize_memory_relation(relation) for relation in relations]
+    elif name == "add_observations":
+        observations = clean.get("observations")
+        if not isinstance(observations, list):
+            raise HTTPException(status_code=400, detail="add_observations requires an observations array.")
+        clean["observations"] = [_normalize_memory_observation(observation) for observation in observations]
+    elif name == "open_nodes":
+        clean["names"] = _string_list(clean.get("names") or clean.get("name"))
+        if not clean["names"]:
+            raise HTTPException(status_code=400, detail="open_nodes requires names.")
+    elif name == "search_nodes":
+        query = str(clean.get("query") or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="search_nodes requires query.")
+        clean["query"] = query
+    return clean
+
+
+def _normalize_sequentialthinking_arguments(arguments: dict) -> dict:
+    clean = dict(arguments)
+    aliases = {
+        "next_thought_needed": "nextThoughtNeeded",
+        "thought_number": "thoughtNumber",
+        "total_thoughts": "totalThoughts",
+        "is_revision": "isRevision",
+        "revises_thought": "revisesThought",
+        "branch_from_thought": "branchFromThought",
+        "branch_id": "branchId",
+        "needs_more_thoughts": "needsMoreThoughts",
+    }
+    for source, target in aliases.items():
+        if source in clean and target not in clean:
+            clean[target] = clean.pop(source)
+    for field_name in ("thoughtNumber", "totalThoughts", "revisesThought", "branchFromThought"):
+        if field_name in clean and clean[field_name] is not None:
+            try:
+                clean[field_name] = int(clean[field_name])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"sequentialthinking {field_name} must be a number.")
+    if "thought" not in clean or not str(clean.get("thought") or "").strip():
+        raise HTTPException(status_code=400, detail="sequentialthinking requires thought.")
+    if "thoughtNumber" not in clean:
+        raise HTTPException(status_code=400, detail="sequentialthinking requires thoughtNumber.")
+    if "totalThoughts" not in clean:
+        raise HTTPException(status_code=400, detail="sequentialthinking requires totalThoughts.")
+    if "nextThoughtNeeded" not in clean:
+        clean["nextThoughtNeeded"] = False
+    return clean
+
+
 def _clean_mcp_arguments(name: str, arguments: dict | None) -> dict:
     if arguments is None:
         clean_arguments: dict = {}
@@ -746,6 +876,10 @@ def _clean_mcp_arguments(name: str, arguments: dict | None) -> dict:
         clean_arguments["time"] = max(0.0, min(10.0, seconds))
     elif name == "browser_take_screenshot" and clean_arguments.get("filename"):
         clean_arguments["filename"] = _safe_screenshot_filename(clean_arguments.get("filename"))
+    elif name in {"create_entities", "create_relations", "add_observations", "open_nodes", "search_nodes"}:
+        clean_arguments = _normalize_memory_arguments(name, clean_arguments)
+    elif name == "sequentialthinking":
+        clean_arguments = _normalize_sequentialthinking_arguments(clean_arguments)
 
     return clean_arguments
 

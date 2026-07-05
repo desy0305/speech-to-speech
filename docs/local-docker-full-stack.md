@@ -161,7 +161,7 @@ For a UI container on Docker Desktop, use this URL:
 ```env
 MCP_GATEWAY_URL=http://host.docker.internal:8811/sse
 MCP_GATEWAY_AUTH_TOKEN=<token printed by docker mcp gateway run>
-MCP_ALLOWED_TOOLS=mcp-find,mcp-add,mcp-remove,mcp-exec,mcp-config-set,mcp-create-profile,mcp-activate-profile,browser_navigate,browser_snapshot,browser_console_messages,browser_network_requests,browser_network_request,browser_take_screenshot,browser_wait_for,browser_click,browser_type,browser_select_option,browser_press_key,browser_fill_form,search_nodes,open_nodes,create_entities,create_relations,add_observations
+MCP_ALLOWED_TOOLS=mcp-find,mcp-add,mcp-remove,mcp-exec,mcp-config-set,mcp-create-profile,mcp-activate-profile,browser_navigate,browser_snapshot,browser_console_messages,browser_network_requests,browser_network_request,browser_take_screenshot,browser_wait_for,browser_click,browser_type,browser_select_option,browser_press_key,browser_fill_form,search_nodes,open_nodes,create_entities,create_relations,add_observations,sequentialthinking
 ```
 
 Restart the UI after changing these values:

@@ -50,6 +50,44 @@ local app server to call `/api/v1/models/load` for the selected LM Studio model.
 If the model is already loaded this is a no-op; otherwise LM Studio loads it
 before the speech backend sends its first chat-completions turn.
 
+## LAN HTTPS Broadcast
+
+Browsers expose microphone/camera APIs only on secure origins, except for
+`localhost`. To use the app from another computer on the same network, serve the
+UI through the `lan-https` proxy profile and open the HTTPS URL.
+
+Generate a local certificate for your LAN IP:
+
+```powershell
+$lanIp = "192.168.0.115"
+New-Item -ItemType Directory -Force .\.local-https\certs | Out-Null
+$certDir = (Resolve-Path .\.local-https\certs).Path -replace '\\','/'
+docker run --rm -v "${certDir}:/certs" alpine:latest sh -c "apk add --no-cache openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes -keyout /certs/hf-voice-ui.key -out /certs/hf-voice-ui.crt -subj '/CN=${lanIp}' -addext 'subjectAltName=IP:${lanIp},DNS:localhost'"
+```
+
+Start the normal backend, optional BG Ani backend, UI, and HTTPS proxy:
+
+```powershell
+docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-ani --profile lan-https up --build
+```
+
+Open `https://<LAN_IP>:7862/` from another computer and accept the
+self-signed certificate warning. When the UI is loaded through HTTPS, `/api/config`
+automatically rewrites the named presets:
+
+- `LM Studio (local)` -> `https://<host>:7862/s2s/v1/realtime`
+- `LM Studio + BG TTS (Ani)` -> `https://<host>:7862/s2s-bg/v1/realtime`
+
+The old `http://localhost:8765` and `http://localhost:8766` preset URLs remain as
+aliases, so browsers with saved settings migrate to the LAN-safe preset URL
+instead of showing `Custom backend URL`.
+
+If another computer cannot reach the proxy, allow the HTTPS port on the host:
+
+```powershell
+New-NetFirewallRule -DisplayName "HF Voice HTTPS 7862 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7862 -RemoteAddress 192.168.0.0/24 -Profile Private,Public
+```
+
 ## Runtime Provider Switching
 
 The `lmstudio` Docker profile now runs one speech stack and switches only the

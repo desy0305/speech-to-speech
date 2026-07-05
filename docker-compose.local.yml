@@ -8,6 +8,9 @@ services:
       # Browser-visible default for direct mode. The browser runs on the host,
       # so localhost:8765 is correct even though the UI is in a container.
       DIRECT_S2S_URL: ${DIRECT_S2S_URL:-http://localhost:8765}
+      SAME_ORIGIN_S2S_PROXY: ${SAME_ORIGIN_S2S_PROXY:-auto}
+      SAME_ORIGIN_S2S_PATH: ${SAME_ORIGIN_S2S_PATH:-/s2s/v1/realtime}
+      SAME_ORIGIN_BG_S2S_PATH: ${SAME_ORIGIN_BG_S2S_PATH:-/s2s-bg/v1/realtime}
       ACTIVE_BACKEND: ${ACTIVE_BACKEND:-lmstudio}
       BACKEND_LABEL: ${BACKEND_LABEL:-LM Studio (local)}
       LLM_PROVIDER: ${LLM_PROVIDER:-LM Studio}
@@ -109,6 +112,18 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "${UI_PORT:-7860}:7860"
+    restart: unless-stopped
+
+  ui-https:
+    profiles: ["lan-https"]
+    image: nginx:alpine
+    depends_on:
+      - ui
+    volumes:
+      - ./deploy/local-https/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${LAN_HTTPS_CERT_DIR:-./.local-https/certs}:/certs:ro
+    ports:
+      - "${UI_HTTPS_PORT:-7862}:7861"
     restart: unless-stopped
 
   backend-lmstudio:

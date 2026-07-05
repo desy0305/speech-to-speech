@@ -229,3 +229,4 @@ dmypy.json
 cover/
 .tox/
 uv.lock
+.local-https/

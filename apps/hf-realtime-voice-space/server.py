@@ -90,6 +90,9 @@ LOAD_BALANCER_URL = os.environ.get("LOAD_BALANCER_URL", "").strip()
 # Optional default direct backend URL for local/docker runs. This is not a
 # secret; it is only used to prefill Settings when no load balancer is configured.
 DIRECT_S2S_URL = os.environ.get("DIRECT_S2S_URL", "").strip()
+SAME_ORIGIN_S2S_PROXY = os.environ.get("SAME_ORIGIN_S2S_PROXY", "auto").strip().lower()
+SAME_ORIGIN_S2S_PATH = os.environ.get("SAME_ORIGIN_S2S_PATH", "/s2s/v1/realtime").strip()
+SAME_ORIGIN_BG_S2S_PATH = os.environ.get("SAME_ORIGIN_BG_S2S_PATH", "/s2s-bg/v1/realtime").strip()
 # HF injects SPACE_ID ("owner/space") into every Space runtime; it's absent
 # locally and on a plain `docker run`. We meter conversation time ONLY on the
 # deployed Space — i.e. when BOTH the LB is configured AND we're on a Space.
@@ -224,6 +227,71 @@ RUNTIME_STACK = {
     }.items()
     if value
 }
+
+
+def _ensure_leading_slash(path: str) -> str:
+    clean = (path or "").strip()
+    if not clean:
+        return ""
+    return clean if clean.startswith("/") else f"/{clean}"
+
+
+def _external_origin(request: Request) -> str:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+        or ""
+    ).split(",")[0].strip()
+    if not host:
+        return ""
+    return f"{proto}://{host}"
+
+
+def _same_origin_proxy_enabled(request: Request) -> bool:
+    if LOAD_BALANCER_URL:
+        return False
+    if SAME_ORIGIN_S2S_PROXY in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if SAME_ORIGIN_S2S_PROXY in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    return proto == "https"
+
+
+def _same_origin_url(origin: str, path: str) -> str:
+    clean_path = _ensure_leading_slash(path)
+    return f"{origin.rstrip('/')}{clean_path}" if origin and clean_path else ""
+
+
+def _direct_config_for_request(request: Request) -> tuple[str, list[dict[str, object]]]:
+    presets: list[dict[str, object]] = [dict(preset) for preset in BACKEND_PRESETS]
+    direct_url = DIRECT_S2S_URL
+    if not _same_origin_proxy_enabled(request):
+        return direct_url, presets
+
+    origin = _external_origin(request)
+    lmstudio_url = _same_origin_url(origin, SAME_ORIGIN_S2S_PATH)
+    bgtts_url = _same_origin_url(origin, SAME_ORIGIN_BG_S2S_PATH)
+    route_by_id = {"lmstudio": lmstudio_url, "lmstudio-bgtts": bgtts_url}
+
+    for preset in presets:
+        preset_id = str(preset.get("id", "")).strip()
+        routed_url = route_by_id.get(preset_id, "")
+        if not routed_url:
+            continue
+        aliases = []
+        old_url = str(preset.get("url", "")).strip()
+        if old_url and old_url != routed_url:
+            aliases.append(old_url)
+        preset["url"] = routed_url
+        if aliases:
+            preset["aliases"] = aliases
+
+    active_backend = _runtime_env("ACTIVE_BACKEND") or "lmstudio"
+    active_url = route_by_id.get(active_backend) or lmstudio_url
+    return active_url or direct_url, presets
 
 app = FastAPI(title="s2s-demo")
 
@@ -387,19 +455,20 @@ async def _search_serper(query: str, key: str) -> dict[str, object]:
 
 
 @app.get("/api/config")
-async def config():
+async def config(request: Request):
     """Client bootstrap: whether web search is available, whether the deploy runs
     behind a load balancer (so the browser uses the /api/session proxy + limiter),
     whether HF sign-in is available, and whether the user may instead set a direct
     s2s server URL. The LB address itself is intentionally NOT included."""
     mcp_health = await _mcp_health_snapshot(timeout_s=0.8)
+    direct_url, backend_presets = _direct_config_for_request(request)
     return {
         "search": bool(TAVILY_KEY or SERPER_KEY),
         "searchProvider": _default_search_provider(),
         "lb": bool(LOAD_BALANCER_URL),
         "allowDirect": not LOAD_BALANCER_URL,
-        "directUrl": "" if LOAD_BALANCER_URL else DIRECT_S2S_URL,
-        "backendPresets": [] if LOAD_BALANCER_URL else BACKEND_PRESETS,
+        "directUrl": "" if LOAD_BALANCER_URL else direct_url,
+        "backendPresets": [] if LOAD_BALANCER_URL else backend_presets,
         "llmProviders": LLM_PROVIDERS,
         "defaultLlmProvider": _runtime_env("DEFAULT_LLM_PROVIDER") or "lmstudio",
         "defaultLlmModel": _runtime_env("DEFAULT_LLM_MODEL") or _runtime_env("LM_STUDIO_MODEL"),

@@ -14,7 +14,7 @@
  * it the MediaStream directly.
  *
  * @typedef {"idle" | "connecting" | "queued" | "your-turn" | "listening" | "user-speaking" | "processing" | "ai-speaking" | "error"} AppState
- * @typedef {{ id: string; label: string; url: string; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} BackendPreset
+ * @typedef {{ id: string; label: string; url: string; aliases?: string[]; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} BackendPreset
  * @typedef {{ activeBackend?: string; backendLabel?: string; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} RuntimeStack
  * @typedef {{ id: string; label: string; selector: string; loaded?: boolean; source?: string; sizeBytes?: number; contextLength?: number; format?: string }} LlmModel
  * @typedef {{ id: string; label: string; configured: boolean; requiresKey: boolean; models: LlmModel[] }} LlmProvider
@@ -1283,6 +1283,8 @@ async function fetchConfig() {
       if (allowDirect && directUrl && !settings.directUrl) {
         settings = { ...settings, directUrl };
         saveSettings(settings);
+      } else if (allowDirect) {
+        migratePresetAliasUrl();
       }
       ensureSelectedLlm(
         cleanString(json.defaultLlmProvider) || runtimeStack.activeBackend || "",
@@ -1362,11 +1364,13 @@ function normaliseBackendPreset(item) {
   const raw = /** @type {Record<string, unknown>} */ (item);
   const label = cleanString(raw.label);
   const url = cleanString(raw.url);
+  const aliases = Array.isArray(raw.aliases) ? raw.aliases.map(cleanString).filter(Boolean) : [];
   if (!label) return null;
   return {
     id: cleanString(raw.id) || label.toLowerCase().replace(/\s+/g, "-"),
     label,
     url,
+    aliases,
     llmProvider: cleanString(raw.llmProvider),
     llmModel: cleanString(raw.llmModel),
     stt: cleanString(raw.stt),
@@ -1594,15 +1598,33 @@ function syncMcpUi() {
   }
 }
 
+/** @param {BackendPreset} preset @returns {string[]} */
+function presetCandidateUrls(preset) {
+  return [preset.url, ...(preset.aliases || [])].filter(Boolean);
+}
+
+/** @param {BackendPreset} preset @param {string} target @returns {boolean} */
+function presetMatchesTarget(preset, target) {
+  return presetCandidateUrls(preset).some((url) => buildDirectWsUrl(url) === target);
+}
+
 /** @param {string} [url] @returns {BackendPreset | undefined} */
 function presetForUrl(url = settings.directUrl) {
   const target = buildDirectWsUrl(url);
   if (target) {
-    const match = backendPresets.find((preset) => preset.url && buildDirectWsUrl(preset.url) === target);
+    const match = backendPresets.find((preset) => presetMatchesTarget(preset, target));
     return match || backendPresets.find((preset) => preset.id === "custom");
   }
   const active = runtimeStack.activeBackend || "";
   return backendPresets.find((preset) => preset.id === active) || backendPresets[0];
+}
+
+function migratePresetAliasUrl() {
+  const preset = presetForUrl(settings.directUrl);
+  if (!preset || preset.id === "custom" || !preset.url) return;
+  if (buildDirectWsUrl(preset.url) === buildDirectWsUrl(settings.directUrl)) return;
+  settings = { ...settings, directUrl: preset.url };
+  saveSettings(settings);
 }
 
 /** @param {BackendPreset | undefined} preset */

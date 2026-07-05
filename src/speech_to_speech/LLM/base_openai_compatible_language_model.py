@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from collections.abc import Iterator
 from typing import Any, Optional
 
@@ -42,6 +45,38 @@ from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
+
+
+PROVIDER_SELECTOR_SEP = "::"
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleRoute:
+    selector: str
+    provider_id: str
+    provider_label: str
+    model_name: str
+    base_url: Optional[str]
+    api_key: Optional[str]
+    extra_body: Optional[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleProviderRoute:
+    provider_id: str
+    provider_label: str
+    base_url: Optional[str]
+    api_key: Optional[str]
+    reasoning_effort: Optional[str]
+    disable_thinking: bool
+
+
+def _clean_str(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _selector(provider_id: str, model_name: str) -> str:
+    return f"{provider_id}{PROVIDER_SELECTOR_SEP}{model_name}"
 
 
 # ── Normalised provider events ────────────────────────────────────────────────
@@ -155,6 +190,22 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
+        self._clients: dict[tuple[Optional[str], Optional[str]], OpenAI] = {(base_url, api_key): self.client}
+        self._default_route = OpenAICompatibleRoute(
+            selector=model_name,
+            provider_id="default",
+            provider_label="Default",
+            model_name=model_name,
+            base_url=base_url,
+            api_key=api_key,
+            extra_body=self._extra_body,
+        )
+        self._provider_routes: dict[str, OpenAICompatibleProviderRoute] = {}
+        self._routes = self._load_routes(
+            default_route=self._default_route,
+            disable_thinking=disable_thinking,
+            fallback_reasoning_effort=reasoning_effort,
+        )
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
 
@@ -194,6 +245,126 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return {"chat_template_kwargs": {"enable_thinking": False}}
         return None
 
+    def _load_routes(
+        self,
+        *,
+        default_route: OpenAICompatibleRoute,
+        disable_thinking: bool,
+        fallback_reasoning_effort: Optional[str],
+    ) -> dict[str, OpenAICompatibleRoute]:
+        routes = {default_route.selector: default_route}
+        raw = os.environ.get("LLM_PROVIDERS_JSON", "").strip()
+        if not raw:
+            return routes
+        try:
+            providers = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid LLM_PROVIDERS_JSON: %s", exc)
+            return routes
+        if not isinstance(providers, list):
+            logger.warning("LLM_PROVIDERS_JSON must be a JSON list")
+            return routes
+
+        model_to_selector: dict[str, str] = {}
+        duplicate_models: set[str] = set()
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            provider_id = _clean_str(provider.get("id"))
+            provider_label = _clean_str(provider.get("label")) or provider_id
+            base_url = _clean_str(provider.get("baseUrl")) or None
+            api_key_env = _clean_str(provider.get("apiKeyEnv"))
+            api_key_value = os.environ.get(api_key_env, "").strip() if api_key_env else ""
+            api_key = api_key_value or None
+            provider_reasoning = _clean_str(provider.get("reasoningEffort")) or fallback_reasoning_effort
+            provider_disable = bool(provider.get("disableThinking", disable_thinking))
+            if not provider_id or not base_url:
+                continue
+            self._provider_routes[provider_id] = OpenAICompatibleProviderRoute(
+                provider_id=provider_id,
+                provider_label=provider_label,
+                base_url=base_url,
+                api_key=api_key,
+                reasoning_effort=provider_reasoning,
+                disable_thinking=provider_disable,
+            )
+            for model in provider.get("models") or []:
+                if not isinstance(model, dict):
+                    continue
+                model_id = _clean_str(model.get("id"))
+                if not model_id:
+                    continue
+                reasoning_effort = _clean_str(model.get("reasoningEffort")) or provider_reasoning
+                model_disable = bool(model.get("disableThinking", provider_disable))
+                selector = _selector(provider_id, model_id)
+                route = OpenAICompatibleRoute(
+                    selector=selector,
+                    provider_id=provider_id,
+                    provider_label=provider_label,
+                    model_name=model_id,
+                    base_url=base_url,
+                    api_key=api_key,
+                    extra_body=self._build_extra_body(base_url, model_disable, reasoning_effort),
+                )
+                routes[selector] = route
+                if model_id in model_to_selector:
+                    duplicate_models.add(model_id)
+                else:
+                    model_to_selector[model_id] = selector
+
+        for model_id, selector in model_to_selector.items():
+            if model_id not in duplicate_models:
+                routes[model_id] = routes[selector]
+        logger.info("Loaded %d OpenAI-compatible LLM routes", len({r.selector for r in routes.values()}))
+        return routes
+
+    def _client_for_route(self, route: OpenAICompatibleRoute) -> OpenAI:
+        key = (route.base_url, route.api_key)
+        client = self._clients.get(key)
+        if client is None:
+            client = OpenAI(api_key=route.api_key, base_url=route.base_url)
+            self._clients[key] = client
+        return client
+
+    def _route_for_runtime(self, runtime_config: Any) -> OpenAICompatibleRoute:
+        session = getattr(runtime_config, "session", None)
+        requested = _clean_str(getattr(session, "model", None)) if session is not None else ""
+        if not requested:
+            return self._default_route
+        route = self._routes.get(requested)
+        if route is None:
+            route = self._dynamic_provider_route(requested)
+        if route is None:
+            logger.warning("Unknown session model/provider route %r; using default route", requested)
+            return self._default_route
+        return route
+
+    def _dynamic_provider_route(self, selector: str) -> Optional[OpenAICompatibleRoute]:
+        if PROVIDER_SELECTOR_SEP not in selector:
+            return None
+        provider_id, model_name = selector.split(PROVIDER_SELECTOR_SEP, 1)
+        provider_id = _clean_str(provider_id)
+        model_name = _clean_str(model_name)
+        provider = self._provider_routes.get(provider_id)
+        if not provider or not model_name:
+            return None
+        route = OpenAICompatibleRoute(
+            selector=selector,
+            provider_id=provider.provider_id,
+            provider_label=provider.provider_label,
+            model_name=model_name,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            extra_body=self._build_extra_body(
+                provider.base_url,
+                provider.disable_thinking,
+                provider.reasoning_effort,
+            ),
+        )
+        self._routes[selector] = route
+        logger.info("Created dynamic OpenAI-compatible LLM route: %s / %s", provider.provider_label, model_name)
+        return route
+
     # ── subclass hooks ──────────────────────────────────────────────────────--
 
     @abstractmethod
@@ -212,7 +383,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         ...
 
     @abstractmethod
-    def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
+    def _request(self, api_input: Any, optional_kwargs: dict[str, Any], route: OpenAICompatibleRoute) -> Any:
         """Issue the create() call and return the response or stream."""
         ...
 
@@ -446,6 +617,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         api_response: Any = None
         state = _GenState()
         error_message: str | None = None
+        route = self._route_for_runtime(turn.runtime_config)
         api_input = self._serialize(active_chat)
         # Images the model actually sees this turn; only these are stripped on
         # write-back, so an image a fast client injects mid-generation for the
@@ -459,7 +631,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         try:
             if error_message is None:
-                api_response = self._request(api_input, optional_kwargs)
+                logger.info("LLM route selected: %s / %s", route.provider_label, route.model_name)
+                api_response = self._request(api_input, optional_kwargs, route)
             if api_response is not None:
                 events = self._iter_events(api_response)
                 if self.stream:

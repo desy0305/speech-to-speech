@@ -20,6 +20,7 @@ from openai.types.responses import (
 from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
+    OpenAICompatibleRoute,
     ProviderEvent,
     TextDelta,
     ToolCall,
@@ -93,12 +94,12 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
             optional_kwargs["tool_choice"] = req_tool_choice
         return optional_kwargs
 
-    def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
-        return self.client.responses.create(
-            model=self.model_name,
+    def _request(self, api_input: Any, optional_kwargs: dict[str, Any], route: OpenAICompatibleRoute) -> Any:
+        return self._client_for_route(route).responses.create(
+            model=route.model_name,
             input=api_input,
             stream=self.stream,
-            extra_body=self._extra_body,
+            extra_body=route.extra_body,
             timeout=self.request_timeout,
             **optional_kwargs,
         )

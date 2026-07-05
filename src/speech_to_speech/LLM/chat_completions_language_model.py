@@ -27,6 +27,7 @@ from openai.types.shared_params import FunctionDefinition
 from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
+    OpenAICompatibleRoute,
     ProviderEvent,
     TextDelta,
     ToolCall,
@@ -189,15 +190,17 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             optional_kwargs["tool_choice"] = _to_chat_tool_choice(req_tool_choice)
         return optional_kwargs
 
-    def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
+    def _request(
+        self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any], route: OpenAICompatibleRoute
+    ) -> Any:
         create_kwargs: dict[str, Any] = dict(optional_kwargs)
         if self.stream:
             create_kwargs["stream_options"] = {"include_usage": True}
-        return self.client.chat.completions.create(
-            model=self.model_name,
+        return self._client_for_route(route).chat.completions.create(
+            model=route.model_name,
             messages=api_input,  # type: ignore[arg-type]  # runtime dicts match the Chat Completions message shape
             stream=self.stream,
-            extra_body=self._extra_body,
+            extra_body=route.extra_body,
             timeout=self.request_timeout,
             **create_kwargs,
         )

@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=memory-tools-20260706" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -173,6 +173,41 @@
           </button>
         </header>
         <div id="chat-history" class="chat-history"></div>
+        <footer id="chat-composer" class="chat-composer">
+          <div id="chat-activity" class="chat-activity" data-state="idle" aria-live="polite">
+            <span id="chat-activity-dot" class="chat-activity-dot" aria-hidden="true"></span>
+            <span id="chat-activity-text" class="chat-activity-text">Ready</span>
+          </div>
+          <div id="chat-attachments" class="chat-attachments" hidden></div>
+          <small id="chat-composer-error" class="chat-composer-error" role="status" hidden></small>
+          <div id="chat-drop-zone" class="chat-input-shell">
+            <button id="chat-attach" class="chat-icon-btn" type="button" title="Attach" aria-label="Attach">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <textarea id="chat-input" rows="1" placeholder="Message" spellcheck="true"></textarea>
+            <button id="chat-clear-draft" class="chat-icon-btn" type="button" title="Clear draft" aria-label="Clear draft">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+            <button id="chat-send" class="chat-send-btn" type="button" title="Send" aria-label="Send">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+            </button>
+          </div>
+          <div class="chat-controls">
+            <label class="chat-speak-toggle" title="Speak replies">
+              <input id="chat-speak-replies" type="checkbox" checked />
+              <span>Speak</span>
+            </label>
+            <button id="chat-camera-attach" class="chat-control-btn" type="button" title="Attach camera snapshot">Camera</button>
+            <button id="chat-stop-generation" class="chat-control-btn" type="button" title="Stop generation">Stop</button>
+            <button id="chat-clear-history" class="chat-control-btn" type="button" title="Clear chat">Clear</button>
+          </div>
+          <div id="chat-runtime" class="chat-runtime" hidden>
+            <span>LLM <strong id="chat-runtime-llm">-</strong></span>
+            <span>STT <strong id="chat-runtime-stt">-</strong></span>
+            <span>TTS <strong id="chat-runtime-tts">-</strong></span>
+          </div>
+          <input id="chat-file-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,text/*,.txt,.md,.json,.csv,.log" hidden />
+        </footer>
       </div>
     </div>
 
@@ -204,7 +239,7 @@
             <li class="pipe-stage">
               <span class="pipe-tag">STT</span>
               <span class="pipe-job">transcribes it</span>
-              <a class="pipe-model" href="https://huggingface.co/nvidia/parakeet-tdt-1.1b" target="_blank" rel="noopener">nvidia/parakeet-tdt-1.1b<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
+              <a class="pipe-model" href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3" target="_blank" rel="noopener">nvidia/parakeet-tdt-0.6b-v3<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
             </li>
             <li class="pipe-stage">
               <span class="pipe-tag">VLM</span>
@@ -425,6 +460,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="main.js"></script>
+    <script type="module" src="main.js?v=memory-tools-20260706"></script>
   </body>
 </html>

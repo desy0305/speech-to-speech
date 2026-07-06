@@ -18,7 +18,7 @@ meaningful — each stage consumes the previous one's output:
 - **VAD** — voice activity detection. Decides *when* you are speaking, so the system
   knows a turn has started and ended. Model: silero-vad.
 - **STT** — speech to text. Transcribes your speech into words. Model:
-  nvidia/parakeet-tdt-1.1b.
+  nvidia/parakeet-tdt-0.6b-v3.
 - **VLM** — the vision-language model that composes the reply. Served via Cerebras.
   Model: google/gemma-4-31B-it.
 - **TTS** — text to speech. Speaks the reply back in the chosen voice. Model:

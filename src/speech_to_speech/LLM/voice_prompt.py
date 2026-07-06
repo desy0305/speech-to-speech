@@ -1,5 +1,7 @@
 """Voice-channel system prompt: lead + session prompt + tail (strongest constraints last)."""
 
+from speech_to_speech.LLM.time_context import current_time_context
+
 VOICE_SYSTEM_PROMPT_LEAD = """\
 You are in a spoken conversation. The user speaks and hears you.
 The session prompt defines persona, facts, goals, and tool descriptions. These channel rules only control spoken output and tool-use behavior.
@@ -25,6 +27,9 @@ _VOICE_SYSTEM_PROMPT_FULL = """\
 Session Prompt:
 {session_prompt}{optional_tools}
 
+Runtime Context:
+{runtime_context}
+
 {tail}
 """
 
@@ -37,6 +42,7 @@ def build_voice_system_prompt(session_prompt: str, *, tool_section: str = "") ->
         lead=VOICE_SYSTEM_PROMPT_LEAD.rstrip(),
         session_prompt=session_prompt.strip(),
         optional_tools=optional_tools,
+        runtime_context=current_time_context(),
         tail=VOICE_SYSTEM_PROMPT_TAIL.rstrip(),
     )
 

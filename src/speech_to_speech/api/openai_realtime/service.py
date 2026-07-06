@@ -195,11 +195,13 @@ class RealtimeService:
         text_prompt_queue: Queue[TextPromptItem] | None = None,
         should_listen: ThreadingEvent | None = None,
         chat_size: int = 10,
+        timestamp_messages: bool = False,
         speculative_turns: SpeculativeTurnTracker | None = None,
     ) -> None:
         self.text_prompt_queue = text_prompt_queue
         self.should_listen = should_listen
         self._chat_size = chat_size
+        self._timestamp_messages = timestamp_messages
         self.speculative_turns = speculative_turns
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
@@ -224,7 +226,9 @@ class RealtimeService:
         """Register a new connection and return its session_id."""
         if self.speculative_turns:
             self.speculative_turns.reset()
-        state = ConnState(runtime_config=RuntimeConfig(chat=Chat(self._chat_size)))
+        state = ConnState(
+            runtime_config=RuntimeConfig(chat=Chat(self._chat_size, timestamp_messages=self._timestamp_messages))
+        )
         self._conns[state.session_id] = state
         self.total_usage.connections += 1
         return state.session_id

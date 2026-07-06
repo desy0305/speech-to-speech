@@ -45,7 +45,8 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_realtime_profile():
     assert vad_args.min_speech_continuation_ms == 192
     assert vad_args.realtime_processing_pause == 0.5
     assert responses_api_args.model_name == "gpt-5.4-mini"
-    assert responses_api_args.chat_size == 30
+    assert responses_api_args.chat_size == 60
+    assert responses_api_args.request_timeout_s == 120.0
     assert responses_api_args.responses_api_stream is True
     assert qwen3_args.qwen3_tts_model_name == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
     assert qwen3_args.qwen3_tts_speaker == "Aiden"
@@ -54,6 +55,7 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_realtime_profile():
     assert qwen3_args.qwen3_tts_non_streaming_mode is True
     assert qwen3_args.qwen3_tts_ref_audio is None
     assert qwen3_args.qwen3_tts_mlx_quantization == "6bit"
+    assert qwen3_args.qwen3_tts_max_new_tokens == 3072
     assert ani_voice_args.ani_voice_api_url == "http://ani-voice-api:8000"
     assert ani_voice_args.ani_voice_style == "F5"
     assert ani_voice_args.ani_voice_speed == 1.6

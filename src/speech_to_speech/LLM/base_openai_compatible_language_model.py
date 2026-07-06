@@ -168,7 +168,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         speculative_turns: SpeculativeTurnTracker | None = None,
         disable_thinking: bool = True,
         reasoning_effort: Optional[str] = None,
-        request_timeout_s: float = 20.0,
+        request_timeout_s: float = 120.0,
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,

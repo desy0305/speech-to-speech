@@ -2,6 +2,7 @@ name: hf-realtime-voice-local
 
 services:
   ui:
+    image: ${S2S_UI_IMAGE:-hf-realtime-voice-local-ui:latest}
     build:
       context: ./apps/hf-realtime-voice-space
     environment:
@@ -128,6 +129,7 @@ services:
 
   backend-lmstudio:
     profiles: ["lmstudio"]
+    image: ${S2S_BACKEND_IMAGE:-hf-realtime-voice-local-backend:latest}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-Dockerfile}
@@ -141,8 +143,12 @@ services:
       - "8765"
       - --stt
       - parakeet-tdt
+      - --parakeet_tdt_model_name
+      - ${PARAKEET_TDT_MODEL_NAME:-nvidia/parakeet-tdt-0.6b-v3}
       - --tts
       - qwen3
+      - --qwen3_tts_max_new_tokens
+      - ${QWEN3_TTS_MAX_NEW_TOKENS:-3072}
       - --llm_backend
       - chat-completions
       - --model_name
@@ -153,9 +159,14 @@ services:
       - ${LM_STUDIO_API_KEY:-lm-studio}
       - --responses_api_reasoning_effort
       - none
+      - --chat_size
+      - ${S2S_CHAT_SIZE:-60}
+      - --request_timeout_s
+      - ${S2S_LLM_REQUEST_TIMEOUT_S:-120}
       - --init_chat_prompt
       - ${S2S_SYSTEM_PROMPT:-You are a helpful voice assistant. Keep replies short, warm, and spoken.}
     environment:
+      TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
       LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-lm-studio}
@@ -217,6 +228,7 @@ services:
 
   backend-cerebras:
     profiles: ["cerebras"]
+    image: ${S2S_BACKEND_IMAGE:-hf-realtime-voice-local-backend:latest}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-Dockerfile}
@@ -230,8 +242,12 @@ services:
       - "8765"
       - --stt
       - parakeet-tdt
+      - --parakeet_tdt_model_name
+      - ${PARAKEET_TDT_MODEL_NAME:-nvidia/parakeet-tdt-0.6b-v3}
       - --tts
       - qwen3
+      - --qwen3_tts_max_new_tokens
+      - ${QWEN3_TTS_MAX_NEW_TOKENS:-3072}
       - --llm_backend
       - chat-completions
       - --model_name
@@ -242,9 +258,14 @@ services:
       - ${CEREBRAS_API_KEY:-}
       - --responses_api_reasoning_effort
       - none
+      - --chat_size
+      - ${S2S_CHAT_SIZE:-60}
+      - --request_timeout_s
+      - ${S2S_LLM_REQUEST_TIMEOUT_S:-120}
       - --init_chat_prompt
       - ${S2S_SYSTEM_PROMPT:-You are a helpful voice assistant. Keep replies short, warm, and spoken.}
     environment:
+      TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
     ports:
@@ -256,6 +277,7 @@ services:
 
   backend-hf-cerebras:
     profiles: ["hf-cerebras"]
+    image: ${S2S_BACKEND_IMAGE:-hf-realtime-voice-local-backend:latest}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-Dockerfile}
@@ -269,8 +291,12 @@ services:
       - "8765"
       - --stt
       - parakeet-tdt
+      - --parakeet_tdt_model_name
+      - ${PARAKEET_TDT_MODEL_NAME:-nvidia/parakeet-tdt-0.6b-v3}
       - --tts
       - qwen3
+      - --qwen3_tts_max_new_tokens
+      - ${QWEN3_TTS_MAX_NEW_TOKENS:-3072}
       - --llm_backend
       - chat-completions
       - --model_name
@@ -281,9 +307,14 @@ services:
       - ${HF_TOKEN:-}
       - --responses_api_reasoning_effort
       - none
+      - --chat_size
+      - ${S2S_CHAT_SIZE:-60}
+      - --request_timeout_s
+      - ${S2S_LLM_REQUEST_TIMEOUT_S:-120}
       - --init_chat_prompt
       - ${S2S_SYSTEM_PROMPT:-You are a helpful voice assistant. Keep replies short, warm, and spoken.}
     environment:
+      TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
     ports:
@@ -295,11 +326,13 @@ services:
 
   ani-voice-api:
     profiles: ["bgtts-ani"]
+    image: ${ANI_VOICE_IMAGE:-hf-realtime-voice-local-ani-voice-api:latest}
     build:
       context: ./deploy/ani-voice-api
       args:
         ANI_VOICE_REV: ${ANI_VOICE_REV:-91722a7fdd404cca1818ace44038ed43322fc66e}
     environment:
+      TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
       HF_TOKEN: ${HF_TOKEN:-}
@@ -307,6 +340,7 @@ services:
       ANI_VOICE_SPEED: ${ANI_VOICE_SPEED:-1.6}
       ANI_VOICE_PRELOAD: ${ANI_VOICE_PRELOAD:-true}
       ANI_VOICE_CACHE_SPEAKER: ${ANI_VOICE_CACHE_SPEAKER:-true}
+      ANI_VOICE_MAX_TOKENS: ${ANI_VOICE_MAX_TOKENS:-1024}
       ANI_VOICE_WARMUP_TEXT: ${ANI_VOICE_WARMUP_TEXT:-Здравейте.}
       ANI_VOICE_REFERENCE_TEXT: ${ANI_VOICE_REFERENCE_TEXT:-Здравейте, радвам се да ви помогна.}
       ANI_VOICE_TIMING_LOGS: ${ANI_VOICE_TIMING_LOGS:-true}
@@ -325,6 +359,7 @@ services:
 
   backend-lmstudio-bgtts:
     profiles: ["bgtts-ani"]
+    image: ${S2S_BACKEND_IMAGE:-hf-realtime-voice-local-backend:latest}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-Dockerfile}
@@ -338,6 +373,10 @@ services:
       - "8765"
       - --stt
       - parakeet-tdt
+      - --parakeet_tdt_model_name
+      - ${PARAKEET_TDT_MODEL_NAME:-nvidia/parakeet-tdt-0.6b-v3}
+      - --parakeet_tdt_language
+      - ${S2S_BG_STT_LANGUAGE:-bg}
       - --tts
       - ani-voice
       - --ani_voice_api_url
@@ -360,9 +399,15 @@ services:
       - ${LM_STUDIO_API_KEY:-lm-studio}
       - --responses_api_reasoning_effort
       - none
+      - --chat_size
+      - ${S2S_CHAT_SIZE:-60}
+      - --request_timeout_s
+      - ${S2S_LLM_REQUEST_TIMEOUT_S:-120}
+      - --enable_lang_prompt
       - --init_chat_prompt
       - ${S2S_SYSTEM_PROMPT:-You are a helpful voice assistant. Keep replies short, warm, and spoken.}
     environment:
+      TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
       LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-lm-studio}

@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, Literal, Union
 
 from openai.types.realtime import ConversationItem
@@ -62,6 +63,10 @@ def _ensure_id(value: str | None, prefix: str) -> str:
     return value
 
 
+def _now_timestamp() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z%z")
+
+
 SupportedItem = Union[
     RealtimeConversationItemSystemMessage,
     RealtimeConversationItemUserMessage,
@@ -92,13 +97,15 @@ class Chat:
       compaction is running, additional triggers are silently bypassed.
     """
 
-    def __init__(self, size: int) -> None:
+    def __init__(self, size: int, *, timestamp_messages: bool = False) -> None:
         self.size = size
+        self.timestamp_messages = timestamp_messages
         self.init_chat_message: RealtimeConversationItemSystemMessage | None = None
         # ``size`` is the number of user turns to keep.  When exceeded the
         # oldest complete turn (everything up to the next user message)
         # is evicted -- or, with a compactor, summarized in the background.
         self.buffer: list[SupportedItem] = []
+        self._item_timestamps: dict[str, str] = {}
         self._pending_tool_calls: dict[str, RealtimeConversationItemFunctionCall] = {}
         self._user_turn_count: int = 0
 
@@ -118,10 +125,26 @@ class Chat:
         if not self.buffer:
             return
         first = self.buffer.pop(0)
+        if first.id is not None:
+            self._item_timestamps.pop(first.id, None)
         if isinstance(first, RealtimeConversationItemUserMessage):
             self._user_turn_count -= 1
         while self.buffer and not isinstance(self.buffer[0], RealtimeConversationItemUserMessage):
-            self.buffer.pop(0)
+            removed = self.buffer.pop(0)
+            if removed.id is not None:
+                self._item_timestamps.pop(removed.id, None)
+
+    def _remember_timestamp_locked(self, item: SupportedItem) -> None:
+        if item.id is not None:
+            self._item_timestamps.setdefault(item.id, _now_timestamp())
+
+    def _timestamp_text_locked(self, item: SupportedItem, text: str) -> str:
+        if not self.timestamp_messages or item.id is None or not text:
+            return text
+        ts = self._item_timestamps.get(item.id)
+        if not ts:
+            return text
+        return f"[{ts}] {text}"
 
     def _has_call_id_in_buffer(self, call_id: str) -> bool:
         for entry in self.buffer:
@@ -190,6 +213,7 @@ class Chat:
 
             elif isinstance(item, RealtimeConversationItemUserMessage):
                 item.id = _ensure_id(item.id, "msg")
+                self._remember_timestamp_locked(item)
                 item.content = [
                     p
                     for p in item.content
@@ -205,6 +229,7 @@ class Chat:
 
             elif isinstance(item, RealtimeConversationItemAssistantMessage):
                 item.id = _ensure_id(item.id, "msg")
+                self._remember_timestamp_locked(item)
                 item.content = [p for p in item.content if p.type == "output_text" and p.text]
                 if not item.content:
                     return item
@@ -214,11 +239,13 @@ class Chat:
             elif isinstance(item, RealtimeConversationItemFunctionCall):
                 item.id = _ensure_id(item.id, "fc")
                 item.call_id = _ensure_id(item.call_id, "call")
+                self._remember_timestamp_locked(item)
                 self._pending_tool_calls[item.call_id] = item
                 logger.debug("Added function_call to chat (call_id=%s)", item.call_id)
 
             elif isinstance(item, RealtimeConversationItemFunctionCallOutput):
                 item.id = _ensure_id(item.id, "fco")
+                self._remember_timestamp_locked(item)
                 self._append_tool_output_locked(item.call_id, item)
                 logger.debug("Added function_call_output to chat (call_id=%s)", item.call_id)
 
@@ -279,6 +306,8 @@ class Chat:
                 if not isinstance(item, RealtimeConversationItemUserMessage) or item.id != item_id:
                     continue
                 del self.buffer[index]
+                if item.id is not None:
+                    self._item_timestamps.pop(item.id, None)
                 self._user_turn_count -= 1
                 logger.debug("Removed speculative user message %s", item_id)
                 return True
@@ -314,7 +343,12 @@ class Chat:
                 content: ResponseInputMessageContentListParam = []
                 for user_part in item.content:
                     if user_part.type == "input_text" and user_part.text is not None:
-                        content.append(ResponseInputTextParam(text=user_part.text or "", type="input_text"))
+                        content.append(
+                            ResponseInputTextParam(
+                                text=self._timestamp_text_locked(item, user_part.text or ""),
+                                type="input_text",
+                            )
+                        )
                     elif user_part.type == "input_image" and user_part.image_url is not None:
                         img = ResponseInputImageParam(type="input_image", detail=user_part.detail or "auto")
                         if user_part.image_url is not None:
@@ -327,7 +361,11 @@ class Chat:
                 for assistant_part in item.content:
                     if assistant_part.type == "output_text" and assistant_part.text is not None:
                         assistant_content.append(
-                            ResponseOutputTextParam(text=assistant_part.text, type="output_text", annotations=[])
+                            ResponseOutputTextParam(
+                                text=self._timestamp_text_locked(item, assistant_part.text),
+                                type="output_text",
+                                annotations=[],
+                            )
                         )
                 if assistant_content:
                     result.append(
@@ -387,9 +425,11 @@ class Chat:
                         )
                     else:
                         text = " ".join(p.text for p in item.content if p.type == "input_text" and p.text)
+                        text = self._timestamp_text_locked(item, text)
                         messages.append(TransformersUserMessage(content=text))
                 elif isinstance(item, RealtimeConversationItemAssistantMessage):
                     text = " ".join(p.text for p in item.content if p.text)
+                    text = self._timestamp_text_locked(item, text)
                     messages.append(TransformersAssistantMessage(content=text))
                 elif isinstance(item, RealtimeConversationItemFunctionCall):
                     assert item.call_id is not None and item.call_id != ""
@@ -433,9 +473,10 @@ class Chat:
     def copy(self) -> Chat:
         """Return a shallow snapshot safe for concurrent read access."""
         with self._lock:
-            clone = Chat(self.size)
+            clone = Chat(self.size, timestamp_messages=self.timestamp_messages)
             clone.init_chat_message = self.init_chat_message
             clone.buffer = list(self.buffer)
+            clone._item_timestamps = dict(self._item_timestamps)
             clone._pending_tool_calls = dict(self._pending_tool_calls)
             clone._user_turn_count = self._user_turn_count
             return clone
@@ -447,6 +488,7 @@ class Chat:
             self._compact_in_flight = False
             self.buffer = []
             self.init_chat_message = None
+            self._item_timestamps = {}
             self._pending_tool_calls = {}
             self._user_turn_count = 0
 
@@ -621,8 +663,16 @@ class Chat:
             user_msg.id = _generate_id("msg")
             asst_msg = make_assistant_message(result.assistant_summary)
             asst_msg.id = _generate_id("msg")
+            summary_ts = _now_timestamp()
 
             self.buffer = [user_msg, asst_msg, *remaining]
+            self._item_timestamps = {
+                item_id: ts
+                for item_id, ts in self._item_timestamps.items()
+                if item_id not in drop_ids
+            }
+            self._item_timestamps[user_msg.id] = summary_ts
+            self._item_timestamps[asst_msg.id] = summary_ts
             self._user_turn_count = sum(1 for x in self.buffer if isinstance(x, RealtimeConversationItemUserMessage))
             logger.info(
                 "Chat compaction applied: buffer now %d item(s), %d user turn(s)",
@@ -757,7 +807,7 @@ def build_active_chat(original_chat: Chat, response: RealtimeResponseCreateParam
     Raises :class:`ChatItemError` if an ``input`` item fails validation.
     """
     if response is not None and response.input is not None:
-        fresh = Chat(original_chat.size)
+        fresh = Chat(original_chat.size, timestamp_messages=original_chat.timestamp_messages)
         for item in response.input:
             add_supported_item(fresh, item)
         return fresh

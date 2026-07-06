@@ -535,6 +535,7 @@ def _build_realtime_pipeline_unit(
         text_prompt_queue=text_prompt_queue,
         should_listen=should_listen,
         chat_size=chat_size,
+        timestamp_messages=False,
         speculative_turns=speculative_turns,
     )
 
@@ -723,7 +724,7 @@ def build_pipeline(
         "text_output_queue": text_output_queue,
         "should_listen": should_listen,
         "runtime_config": RuntimeConfig(
-            chat=Chat(_lm_vars.get("chat_size", 30)),
+            chat=Chat(_lm_vars.get("chat_size", 60), timestamp_messages=False),
             session=RealtimeSessionCreateRequest(
                 type="realtime",
                 instructions=_lm_vars.get("init_chat_prompt"),

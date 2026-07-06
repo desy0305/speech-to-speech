@@ -42,7 +42,7 @@ The pipeline provides a fully open and modular approach, with a focus on leverag
 - Any [Whisper](https://huggingface.co/docs/transformers/en/model_doc/whisper) model checkpoint on the Hugging Face Hub through Transformers 🤗, including [whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) and [distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3)
 - [Lightning Whisper MLX](https://github.com/mustafaaljadery/lightning-whisper-mlx?tab=readme-ov-file#lightning-whisper-mlx)
 - [MLX Audio Whisper](https://github.com/huggingface/mlx-audio) - Fast Whisper inference on Apple Silicon
-- [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-1.1b) - Real-time streaming STT with sub-100ms latency on Apple Silicon (CUDA/CPU via nano-parakeet, no NeMo)
+- [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) - Real-time streaming multilingual STT with Bulgarian support (CUDA/CPU via nano-parakeet, no NeMo)
 - [Paraformer - FunASR](https://github.com/modelscope/FunASR)
 
 **LLM**
@@ -74,6 +74,9 @@ docker compose -f docker-compose.local.yml --profile lmstudio up --build
 
 See [`docs/local-docker-full-stack.md`](docs/local-docker-full-stack.md) for
 LM Studio, Cerebras, Gemini/BGGPT, web search, MCP, and Bulgarian TTS profiles.
+For a production replication checklist, LAN HTTPS, memory/MCP notes, and
+Docker Hub prebuilt-image flow, see
+[`docs/production-docker-readme.md`](docs/production-docker-readme.md).
 
 Install the default package from PyPI:
 ```bash
@@ -176,8 +179,10 @@ speech-to-speech \
     --qwen3_tts_backend ggml \
     --qwen3_tts_non_streaming_mode True \
     --qwen3_tts_mlx_quantization 6bit \
+    --qwen3_tts_max_new_tokens 3072 \
     --model_name gpt-5.4-mini \
-    --chat_size 30 \
+    --chat_size 60 \
+    --request_timeout_s 120 \
     --responses_api_stream \
     --enable_live_transcription \
     --mode realtime
@@ -222,7 +227,7 @@ speech-to-speech \
 
 This setting:
    - Adds `--device mps` to use MPS for all models.
-   - Sets [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-1.1b) for STT (fast streaming ASR on Apple Silicon)
+   - Sets [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) for STT (fast streaming multilingual ASR with Bulgarian support)
    - Sets MLX LM as the LLM backend
    - Sets Qwen3-TTS for TTS
    - `--tts pocket` and `--tts kokoro` are also valid TTS options on macOS.

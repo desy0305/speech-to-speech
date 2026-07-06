@@ -87,9 +87,9 @@ class Qwen3TTSHandlerArguments:
         },
     )
     qwen3_tts_max_new_tokens: int = field(
-        default=1536,
+        default=3072,
         metadata={
-            "help": "Upper cap for Qwen3-TTS codec tokens. The handler estimates a per-utterance budget from the text and clamps it to this ceiling (~12 tokens per second of audio). Raise this above 1536 if you want to allow longer utterances."
+            "help": "Upper cap for Qwen3-TTS codec tokens. The handler estimates a per-utterance budget from the text and clamps it to this ceiling (~12.5 tokens per second of audio). Raise this above 3072 if you want to allow longer utterances."
         },
     )
     qwen3_tts_blocksize: int = field(

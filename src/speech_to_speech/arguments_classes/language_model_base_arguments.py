@@ -20,8 +20,14 @@ class LanguageModelBaseArguments:
         metadata={"help": "The initial chat prompt to establish context for the language model."},
     )
     chat_size: int = field(
-        default=30,
-        metadata={"help": "Number of interactions assistant-user to keep for the chat."},
+        default=60,
+        metadata={"help": "Number of user turns to keep before rolling compaction/eviction. Default is 60."},
+    )
+    request_timeout_s: float = field(
+        default=120.0,
+        metadata={
+            "help": "HTTP read timeout in seconds for OpenAI-compatible LLM requests. Default is 120."
+        },
     )
     stream_batch_sentences: int = field(
         default=3,

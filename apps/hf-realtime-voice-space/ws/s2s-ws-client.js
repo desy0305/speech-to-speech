@@ -81,6 +81,16 @@
  * @property {"user" | "assistant"} role
  * @property {string} text
  * @property {boolean} partial
+ *
+ * @typedef {Object} UserImageAttachment
+ * @property {string} dataUrl
+ * @property {string} [name]
+ *
+ * @typedef {Object} UserTextAttachment
+ * @property {string} text
+ * @property {string} [name]
+ * @property {string} [type]
+ * @property {number} [size]
  */
 
 import {
@@ -89,7 +99,7 @@ import {
   extractResponseTranscript,
   trimTrailingSlash,
 } from "./codec.js";
-import { OrbVisualiser, VIS_FFT_SIZE } from "./orb-visualizer.js";
+import { OrbVisualiser, VIS_FFT_SIZE } from "./orb-visualizer.js?v=chat-composer-20260706";
 
 /** Build an Error carrying a `code` (and optional extra fields) so callers can
  *  branch on the failure kind: "limit" | "queue-full" | "queue-expired" | "aborted".
@@ -192,7 +202,9 @@ export class S2sWsRealtimeClient extends EventTarget {
     // and replayed, one at a time, as each response.done frees the slot.
     this._openResponses = 0;
     this._createInFlight = false;
-    /** @type {{ image?: string }[]} Pending response.create payloads, one per
+    /** @type {{ image?: string; response?: Record<string, any> }} */
+    this._createInFlightOpts = {};
+    /** @type {{ image?: string; response?: Record<string, any> }[]} Pending response.create payloads, one per
      * queued requestResponse(). A payload may carry an image to send just
      * before its create (so the frame travels with the create, not eagerly). */
     this._createQueue = [];
@@ -480,36 +492,6 @@ export class S2sWsRealtimeClient extends EventTarget {
     await ctx.audioWorklet.addModule(new URL("mic-capture.js", base).href);
     await ctx.audioWorklet.addModule(new URL("audio-playback.js", base).href);
 
-    const captureNode = new AudioWorkletNode(ctx, "mic-capture", {
-      numberOfInputs: 1,
-      numberOfOutputs: 0,
-      processorOptions: { chunkMs: MIC_CHUNK_MS },
-    });
-    captureNode.port.onmessage = (e) => {
-      const data = e.data;
-      if (data instanceof ArrayBuffer) {
-        this._onMicChunk(data);
-      } else if (data?.kind === "level") {
-        // Raw pre-gate mic RMS for the Settings meter.
-        this.dispatchEvent(new CustomEvent("input-level", { detail: { rms: data.rms } }));
-      }
-    };
-    // Push the initial gate config now that the worklet exists.
-    captureNode.port.postMessage({ kind: "gate", ...this._noiseGate });
-    this._captureNode = captureNode;
-
-    const micSrc = ctx.createMediaStreamSource(this.options.micStream);
-    micSrc.connect(captureNode);
-    this._micSrc = micSrc;
-
-    // Mic analyser: tap the mic in parallel with the worklet so we get the
-    // raw (un-resampled, un-clipped) signal for the visualiser.
-    const micAnalyser = ctx.createAnalyser();
-    micAnalyser.fftSize = VIS_FFT_SIZE;
-    micAnalyser.smoothingTimeConstant = 0;
-    micSrc.connect(micAnalyser);
-    this._micAnalyser = micAnalyser;
-
     const playbackNode = new AudioWorkletNode(ctx, "audio-playback", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -527,8 +509,70 @@ export class S2sWsRealtimeClient extends EventTarget {
     this._outAnalyser = outAnalyser;
     this._playbackNode = playbackNode;
 
+    // Text-only sessions still need an output graph so spoken replies can play,
+    // but they do not have a microphone until the user taps the orb. Use a
+    // quiet analyser for the visualizer and replace it when a mic is attached.
+    const micAnalyser = ctx.createAnalyser();
+    micAnalyser.fftSize = VIS_FFT_SIZE;
+    micAnalyser.smoothingTimeConstant = 0;
+    this._micAnalyser = micAnalyser;
+
     this._visualiser = new OrbVisualiser(micAnalyser, outAnalyser, () => this._aiSpeaking);
     this._visualiser.start();
+
+    if (this.options.micStream) {
+      await this._attachMicStream(this.options.micStream);
+    }
+  }
+
+  /**
+   * Attach live microphone capture to an already-connected text session.
+   * @param {MediaStream} stream
+   */
+  async attachMicStream(stream) {
+    this.options.micStream = stream;
+    if (this._ctx?.state === "suspended") {
+      try {
+        await this._ctx.resume();
+      } catch (err) {
+        console.warn("[ws] AudioContext resume failed while attaching mic:", err);
+      }
+    }
+    await this._attachMicStream(stream);
+  }
+
+  /** @param {MediaStream} stream */
+  async _attachMicStream(stream) {
+    if (!this._ctx || !stream) return;
+    if (this._captureNode || this._micSrc) return;
+    const ctx = this._ctx;
+    const captureNode = new AudioWorkletNode(ctx, "mic-capture", {
+      numberOfInputs: 1,
+      numberOfOutputs: 0,
+      processorOptions: { chunkMs: MIC_CHUNK_MS },
+    });
+    captureNode.port.onmessage = (e) => {
+      const data = e.data;
+      if (data instanceof ArrayBuffer) {
+        this._onMicChunk(data);
+      } else if (data?.kind === "level") {
+        this.dispatchEvent(new CustomEvent("input-level", { detail: { rms: data.rms } }));
+      }
+    };
+    captureNode.port.postMessage({ kind: "gate", ...this._noiseGate });
+    this._captureNode = captureNode;
+
+    const micSrc = ctx.createMediaStreamSource(stream);
+    micSrc.connect(captureNode);
+    this._micSrc = micSrc;
+
+    const micAnalyser = ctx.createAnalyser();
+    micAnalyser.fftSize = VIS_FFT_SIZE;
+    micAnalyser.smoothingTimeConstant = 0;
+    micSrc.connect(micAnalyser);
+    this._micAnalyser = micAnalyser;
+    this._visualiser?.setInputAnalyser(micAnalyser);
+    this.dispatchEvent(new CustomEvent("input-ready"));
   }
 
   /** @param {string} connectUrl */
@@ -653,6 +697,7 @@ export class S2sWsRealtimeClient extends EventTarget {
         // (this confirms either our create or a server-initiated one).
         this._openResponses++;
         this._createInFlight = false;
+        this._createInFlightOpts = {};
         if (this._status === "connected" || this._status === "user-speaking") {
           this._setStatus("processing");
         }
@@ -777,6 +822,42 @@ export class S2sWsRealtimeClient extends EventTarget {
         break;
       }
 
+      case "response.output_text.delta": {
+        const rid = typeof event.response_id === "string" ? event.response_id : "";
+        const delta = typeof event.delta === "string" ? event.delta : "";
+        if (delta) {
+          this._asstTranscriptByResp.set(rid, (this._asstTranscriptByResp.get(rid) || "") + delta);
+          this.dispatchEvent(
+            new CustomEvent("transcript", {
+              detail: { role: "assistant", text: this._asstDisplay(rid), partial: true, responseId: rid },
+            }),
+          );
+        }
+        break;
+      }
+
+      case "response.output_text.done": {
+        const rid = typeof event.response_id === "string" ? event.response_id : "";
+        const segment =
+          (typeof event.text === "string" && event.text) ||
+          this._asstTranscriptByResp.get(rid) ||
+          "";
+        this._asstTranscriptByResp.delete(rid);
+        if (segment) {
+          const prev = this._asstFullByResp.get(rid) || "";
+          this._asstFullByResp.set(rid, prev ? `${prev} ${segment}` : segment);
+        }
+        const full = this._asstFullByResp.get(rid) || "";
+        if (full) {
+          this.dispatchEvent(
+            new CustomEvent("transcript", {
+              detail: { role: "assistant", text: full, partial: false, responseId: rid },
+            }),
+          );
+        }
+        break;
+      }
+
       case "response.audio_transcript.delta":
       case "response.output_audio_transcript.delta": {
         // Stream the assistant transcript live: accumulate the incremental
@@ -835,9 +916,13 @@ export class S2sWsRealtimeClient extends EventTarget {
             err?.code === "conversation_already_has_active_response") {
           if (this._createInFlight) {
             this._createInFlight = false;
-            // Re-queue a BARE create: any image on the original payload was
-            // already sent before this (rejected) create, so don't resend it.
-            this._createQueue.push({});
+            const retry = this._createInFlightOpts?.response
+              ? { response: this._createInFlightOpts.response }
+              : {};
+            this._createInFlightOpts = {};
+            // Any image was already sent before the rejected create, so retry
+            // only the response options (for example text-only output).
+            this._createQueue.push(retry);
           }
           break;
         }
@@ -968,12 +1053,55 @@ export class S2sWsRealtimeClient extends EventTarget {
   }
 
   /**
+   * Add a typed user turn and ask the same realtime backend for a response.
+   * @param {{ text?: string; images?: UserImageAttachment[]; textAttachments?: UserTextAttachment[]; speak?: boolean }} message
+   */
+  sendUserMessage(message = {}) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Realtime session is not connected");
+    }
+    const text = this._composeUserText(message.text || "", message.textAttachments || []);
+    const images = Array.isArray(message.images) ? message.images : [];
+    /** @type {Record<string, any>[]} */
+    const content = [];
+    if (text.trim()) {
+      content.push({ type: "input_text", text });
+    }
+    for (const image of images) {
+      if (image?.dataUrl) content.push({ type: "input_image", image_url: image.dataUrl, detail: "auto" });
+    }
+    if (!content.length) return;
+    this._send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content },
+    });
+    const response = message.speak === false ? { output_modalities: ["text"] } : undefined;
+    this.requestResponse(response ? { response } : {});
+  }
+
+  /** @param {string} text @param {UserTextAttachment[]} attachments */
+  _composeUserText(text, attachments) {
+    const trimmed = text.trim();
+    if (!attachments.length) return trimmed;
+    const parts = [];
+    if (trimmed) parts.push(trimmed);
+    parts.push("Attached text files:");
+    for (const att of attachments) {
+      const name = att.name || "attachment";
+      const type = att.type || "text/plain";
+      const size = Number.isFinite(att.size) ? `${att.size} bytes` : "";
+      parts.push(`--- ${name} (${type}${size ? `, ${size}` : ""}) ---\n${att.text || ""}`);
+    }
+    return parts.join("\n\n");
+  }
+
+  /**
    * Ask the model to generate a response now (after feeding tool results).
    * Serialized: if a response is already in flight we queue this request and
    * replay it once the active response finishes, so we never trip the
    * backend's `conversation_already_has_active_response` guard.
    *
-   * @param {{ image?: string }} [opts] Optional `image` (a data URL) sent as a
+   * @param {{ image?: string; response?: Record<string, any> }} [opts] Optional `image` (a data URL) sent as a
    *   user `input_image` immediately before this response.create — so the frame
    *   travels with the create (and is deferred together with it if queued),
    *   rather than being added to the conversation eagerly. Used by the camera
@@ -983,6 +1111,7 @@ export class S2sWsRealtimeClient extends EventTarget {
     if (this._responseActive()) {
       this._createQueue.push(opts);
       if (this._debug) console.debug(`[ws] response.create queued (a response is active); pending=${this._createQueue.length}`);
+      this.dispatchEvent(new CustomEvent("response-queued", { detail: { pending: this._createQueue.length } }));
       return;
     }
     this._createResponseNow(opts);
@@ -995,12 +1124,14 @@ export class S2sWsRealtimeClient extends EventTarget {
 
   /** Send a response.create immediately and arm the in-flight guard. Any image
    *  on the payload is added as user content right before the create.
-   *  @param {{ image?: string }} [opts] */
+   *  @param {{ image?: string; response?: Record<string, any> }} [opts] */
   _createResponseNow(opts = {}) {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     if (opts.image) this.sendUserImage(opts.image);
     this._createInFlight = true;
-    this._send({ type: "response.create" });
+    this._createInFlightOpts = opts;
+    this._send(opts.response ? { type: "response.create", response: opts.response } : { type: "response.create" });
+    this.dispatchEvent(new CustomEvent("response-requested"));
   }
 
   /** Replay one queued response.create if the slot is now free. Called on every
@@ -1010,7 +1141,17 @@ export class S2sWsRealtimeClient extends EventTarget {
       const opts = this._createQueue.shift();
       if (this._debug) console.debug(`[ws] replaying queued response.create; remaining=${this._createQueue.length}`);
       this._createResponseNow(opts);
+      this.dispatchEvent(new CustomEvent("response-queued", { detail: { pending: this._createQueue.length } }));
     }
+  }
+
+  cancelResponse() {
+    this._createQueue = [];
+    this._createInFlightOpts = {};
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._playbackNode?.port.postMessage({ kind: "clear" });
+    this._aiSpeaking = false;
+    this._send({ type: "response.cancel" });
   }
 
   /** @param {boolean} muted */

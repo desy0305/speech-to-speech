@@ -214,12 +214,30 @@ Verify the full MCP path from host to UI proxy:
 powershell -ExecutionPolicy Bypass -File .\scripts\mcp\check-mcp-health.ps1
 ```
 
+Run the full MCP QA audit, including a memory write/read, a separate-session
+read, optional gateway restart persistence, and a sequentialthinking smoke
+call:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\mcp\qa-mcp-audit.ps1 -EnvPath .\.env -RestartGateway
+```
+
+The Docker MCP Memory server persists through the named Docker volume
+`claude-memory:/app/dist`. The gateway starts memory containers with `--rm`, so
+the containers are disposable, but `memory.json` survives as long as the
+`claude-memory` volume is not removed.
+
 When `MCP_GATEWAY_URL` is configured, MCP is enabled by default and is visible in
 the Tools modal as `Docker MCP / Playwright`; the same switch also appears in
 Settings as `Allow model to call MCP tools`. The current allowlist gives the
 assistant Docker MCP discovery/profile tools plus basic Playwright browsing
-controls. `browser_run_code_unsafe`, arbitrary evaluate, file upload, and drop
-tools are intentionally not allowlisted.
+controls. Memory tools are exposed twice on purpose: as direct first-class tools
+(`search_nodes`, `open_nodes`, `create_entities`, `add_observations`,
+`create_relations`) for reliable local-model use, and through the generic
+`mcp_call` wrapper for ordered batches such as write-then-verify. Bulgarian
+memory recall should search both Cyrillic and Latin/transliterated forms before
+concluding no memory exists. `browser_run_code_unsafe`, arbitrary evaluate, file
+upload, and drop tools are intentionally not allowlisted.
 
 ## VRAM Notes
 

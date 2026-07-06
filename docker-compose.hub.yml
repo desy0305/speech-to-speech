@@ -1,0 +1,20 @@
+name: hf-realtime-voice-local
+
+services:
+  ui:
+    image: ${S2S_UI_IMAGE:-desy0305/hf-realtime-voice-ui:latest}
+
+  backend-lmstudio:
+    image: ${S2S_BACKEND_IMAGE:-desy0305/speech-to-speech-backend:latest}
+
+  backend-cerebras:
+    image: ${S2S_BACKEND_IMAGE:-desy0305/speech-to-speech-backend:latest}
+
+  backend-hf-cerebras:
+    image: ${S2S_BACKEND_IMAGE:-desy0305/speech-to-speech-backend:latest}
+
+  backend-lmstudio-bgtts:
+    image: ${S2S_BACKEND_IMAGE:-desy0305/speech-to-speech-backend:latest}
+
+  ani-voice-api:
+    image: ${ANI_VOICE_IMAGE:-desy0305/ani-voice-api:91722a7}

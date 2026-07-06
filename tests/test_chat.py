@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+import speech_to_speech.LLM.chat as chat_module
 from openai.types.realtime.conversation_item import (
     RealtimeConversationItemAssistantMessage,
     RealtimeConversationItemFunctionCall,
@@ -521,6 +522,17 @@ class TestToResponseApiChat:
         assert len(result) == 1
         assert result[0]["role"] == "user"
         assert result[0]["content"][0]["text"] == "What is 2+2?"
+
+    def test_timestamped_messages_are_prefixed_for_model_context(self, monkeypatch):
+        monkeypatch.setattr(chat_module, "_now_timestamp", lambda: "2026-07-06 10:11:12 EEST+0300")
+        chat = Chat(size=5, timestamp_messages=True)
+        chat.add_item(_user("What is 2+2?"))
+        chat.add_item(_assistant("Four."))
+
+        result = chat.to_responses_api_chat()
+
+        assert result[0]["content"][0]["text"] == "[2026-07-06 10:11:12 EEST+0300] What is 2+2?"
+        assert result[1]["content"][0]["text"] == "[2026-07-06 10:11:12 EEST+0300] Four."
 
     def test_user_image_message(self):
         chat = Chat(size=5)

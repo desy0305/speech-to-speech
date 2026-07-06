@@ -295,6 +295,16 @@ def _direct_config_for_request(request: Request) -> tuple[str, list[dict[str, ob
 
 app = FastAPI(title="s2s-demo")
 
+
+@app.middleware("http")
+async def _no_cache_ui_assets(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/api/") and not path.startswith("/s2s"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # Wire HF OAuth before the app serves (no-op unless the OAuth env is present).
 # Sign-in only matters when we're metering (prod Space), so gate it on that.
 AUTH_ENABLED = LIMITER_ENABLED and auth.attach(app)

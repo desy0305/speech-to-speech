@@ -37,6 +37,15 @@ export class OrbVisualiser {
     this._frame = null;
   }
 
+  /** Replace the input analyser after a text-only session upgrades to voice.
+   *  @param {AnalyserNode} analyser */
+  setInputAnalyser(analyser) {
+    this._mic = analyser;
+    if (this._buf.length !== analyser.frequencyBinCount) {
+      this._buf = new Uint8Array(analyser.frequencyBinCount);
+    }
+  }
+
   /** Begin the rAF loop (idempotent). */
   start() {
     if (this._frame !== null) return;

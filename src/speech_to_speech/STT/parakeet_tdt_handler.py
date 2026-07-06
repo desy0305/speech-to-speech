@@ -386,12 +386,39 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         Returns:
             Detected language code or None if detection fails
         """
+        clean = (text or "").strip().lower()
+        if not clean:
+            return None
+        bg_hints = (
+            "здравей",
+            "здрасти",
+            "българ",
+            "пловдив",
+            "софия",
+            "моля",
+            "благодаря",
+            "какво",
+            "какви",
+            "кой",
+            "коя",
+            "кои",
+            "това",
+            "този",
+            "тази",
+            "добро утро",
+        )
+        if any(hint in clean for hint in bg_hints):
+            return "bg"
+
         if not LINGUA_AVAILABLE:
             logger.warning("lingua-py not available, cannot detect language from text")
             return None
 
-        # Skip very short utterances where language ID is still too noisy.
-        if not text or len(text.strip()) < 20:
+        # Skip very short utterances where language ID is still too noisy. If a
+        # Bulgarian session is already active, keep it sticky for Cyrillic text.
+        if len(clean) < 20:
+            if self.last_language == "bg" and any("\u0400" <= ch <= "\u04ff" for ch in clean):
+                return "bg"
             return None
 
         detected = _lingua_detector.detect_language_of(text)

@@ -744,11 +744,11 @@ def test_estimate_max_new_tokens_respects_configured_cap():
 def test_estimate_max_new_tokens_can_exceed_default_ceiling_when_raised():
     handler = object.__new__(Qwen3TTSHandler)
     handler.streaming_chunk_size = 8
-    handler.max_new_tokens = 2400
+    handler.max_new_tokens = 4800
 
-    long_text = " ".join(["This is a deliberately long sentence for the Qwen3 TTS budget estimator."] * 30)
+    long_text = " ".join(["This is a deliberately long sentence for the Qwen3 TTS budget estimator."] * 60)
 
-    assert handler._estimate_max_new_tokens(long_text) > 1536
+    assert handler._estimate_max_new_tokens(long_text) > 3072
 
 
 def test_process_voice_clone_scales_max_new_tokens_for_faster_backend(monkeypatch):

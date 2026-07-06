@@ -65,7 +65,7 @@ class TTSEngine:
         self.default_speed = _float_env("ANI_VOICE_SPEED", 1.6)
         self.supertonic_steps = _int_env("ANI_VOICE_SUPERTONIC_STEPS", 8)
         self.supertonic_sample_rate = _int_env("ANI_VOICE_SUPERTONIC_SAMPLE_RATE", 44100)
-        self.max_tokens = _int_env("ANI_VOICE_MAX_TOKENS", 512)
+        self.max_tokens = _int_env("ANI_VOICE_MAX_TOKENS", 1024)
         self.temperature = _float_env("ANI_VOICE_TEMPERATURE", 0.7)
         self.top_k = _int_env("ANI_VOICE_TOP_K", 250)
         self.top_p = _float_env("ANI_VOICE_TOP_P", 0.95)

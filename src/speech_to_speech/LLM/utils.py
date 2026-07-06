@@ -42,6 +42,8 @@ WHISPER_LANGUAGE_TO_LLM_LANGUAGE = {
     "pl": "polish",
     "it": "italian",
     "nl": "dutch",
+    "bg": "bulgarian",
+    "ru": "russian",
 }
 
 

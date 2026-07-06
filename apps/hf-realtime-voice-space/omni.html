@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3 Omni Realtime</title>
+    <link rel="stylesheet" href="omni.css?v=20260706" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Local realtime pilot</p>
+          <h1>Qwen3 Omni</h1>
+        </div>
+        <a class="main-link" href="/">Main stack</a>
+      </header>
+
+      <section class="status-strip" aria-live="polite">
+        <div>
+          <span class="label">State</span>
+          <strong id="state">Idle</strong>
+        </div>
+        <div>
+          <span class="label">Model</span>
+          <strong id="model">Checking...</strong>
+        </div>
+        <div>
+          <span class="label">Endpoint</span>
+          <strong id="endpoint">Local only</strong>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Realtime controls">
+        <button id="connect" class="primary" type="button">Connect</button>
+        <button id="talk" type="button" disabled>Start talking</button>
+        <button id="end-turn" type="button" disabled>End turn</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+      </section>
+
+      <section class="meter-row" aria-label="Audio meter">
+        <div class="orb" id="orb" aria-hidden="true">
+          <span></span>
+        </div>
+        <div class="meter">
+          <div id="meter-fill"></div>
+        </div>
+      </section>
+
+      <section class="transcript" aria-label="Transcript">
+        <div class="column">
+          <h2>Input</h2>
+          <p id="input-text"></p>
+        </div>
+        <div class="column">
+          <h2>Output</h2>
+          <p id="output-text"></p>
+        </div>
+      </section>
+
+      <section class="log-wrap" aria-label="Event log">
+        <div class="log-head">
+          <h2>Log</h2>
+          <button id="clear-log" type="button">Clear</button>
+        </div>
+        <pre id="log" aria-live="polite"></pre>
+      </section>
+    </main>
+    <script type="module" src="omni.js?v=20260706-dedupe"></script>
+  </body>
+</html>

@@ -73,7 +73,7 @@ services:
       - --responses_api_base_url
       - ${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
       - --responses_api_api_key
-      - ${LM_STUDIO_API_KEY:-lm-studio}
+      - ${LM_STUDIO_API_KEY:-}
       - --responses_api_reasoning_effort
       - none
       - --chat_size
@@ -87,7 +87,7 @@ services:
       TZ: ${TZ:-Europe/Sofia}
       HF_HOME: /root/.cache/huggingface
       TORCH_HOME: /root/.cache/torch
-      LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-lm-studio}
+      LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
       HF_TOKEN: ${HF_TOKEN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}

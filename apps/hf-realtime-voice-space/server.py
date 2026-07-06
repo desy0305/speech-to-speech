@@ -37,13 +37,15 @@ the moment a slot is actually claimed (a grant), never while queued.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+import websockets
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -117,6 +119,28 @@ MCP_MAX_ARGUMENT_BYTES = _bounded_int_env("MCP_MAX_ARGUMENT_BYTES", 8192, 512, 6
 MCP_REQUEST_TIMEOUT_S = _bounded_float_env("MCP_REQUEST_TIMEOUT_S", 20.0, 2.0, 120.0)
 MCP_CONNECT_TIMEOUT_S = _bounded_float_env("MCP_CONNECT_TIMEOUT_S", 5.0, 0.5, 30.0)
 MCP_REQUEST_LOCK = asyncio.Lock()
+QWEN_OMNI_BASE_URL = (
+    os.environ.get("QWEN_OMNI_BASE_URL")
+    or os.environ.get("LM_STUDIO_BASE_URL")
+    or "http://host.docker.internal:1234/v1"
+).strip()
+QWEN_OMNI_MODEL = os.environ.get(
+    "QWEN_OMNI_MODEL",
+    "ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF",
+).strip()
+QWEN_OMNI_API_KEY = (
+    os.environ.get("QWEN_OMNI_API_KEY")
+    or os.environ.get("LM_STUDIO_API_KEY")
+    or ""
+).strip()
+QWEN_OMNI_REQUIRE_LOCAL = os.environ.get("QWEN_OMNI_REQUIRE_LOCAL", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S = _bounded_float_env("QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S", 4.0, 1.0, 30.0)
+QWEN_OMNI_WS_MAX_BYTES = _bounded_int_env("QWEN_OMNI_WS_MAX_BYTES", 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024)
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -263,6 +287,146 @@ def _same_origin_proxy_enabled(request: Request) -> bool:
 def _same_origin_url(origin: str, path: str) -> str:
     clean_path = _ensure_leading_slash(path)
     return f"{origin.rstrip('/')}{clean_path}" if origin and clean_path else ""
+
+
+def _is_localish_host(host: str) -> bool:
+    clean = (host or "").strip().strip("[]").lower()
+    if not clean:
+        return False
+    if clean in {"localhost", "host.docker.internal"} or clean.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(clean)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def _qwen_omni_base_url() -> str:
+    return QWEN_OMNI_BASE_URL.rstrip("/")
+
+
+def _qwen_omni_url_error() -> str:
+    base_url = _qwen_omni_base_url()
+    if not base_url or not QWEN_OMNI_MODEL:
+        return "Qwen3 Omni wrapper is not configured. Set QWEN_OMNI_BASE_URL and QWEN_OMNI_MODEL."
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        return "Qwen3 Omni base URL must be an http(s) or ws(s) URL."
+    if QWEN_OMNI_REQUIRE_LOCAL and not _is_localish_host(parsed.hostname or ""):
+        return "Qwen3 Omni base URL must point to localhost, host.docker.internal, or a private LAN address."
+    return ""
+
+
+def _qwen_omni_auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {QWEN_OMNI_API_KEY}"} if QWEN_OMNI_API_KEY else {}
+
+
+def _qwen_omni_models_url() -> str:
+    return f"{_qwen_omni_base_url()}/models"
+
+
+def _qwen_omni_realtime_url() -> str:
+    parsed = urlsplit(_qwen_omni_base_url())
+    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    path = f"{path}/v1/realtime"
+    return urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+
+def _websocket_status_code(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    status_code = getattr(exc, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
+
+
+async def _probe_qwen_omni_realtime() -> tuple[str, str, int | None]:
+    try:
+        async with websockets.connect(
+            _qwen_omni_realtime_url(),
+            additional_headers=_qwen_omni_auth_headers(),
+            open_timeout=QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S,
+            close_timeout=1.0,
+            max_size=QWEN_OMNI_WS_MAX_BYTES,
+        ):
+            return "realtime_supported", "Qwen3 Omni realtime WebSocket upgrade succeeded.", None
+    except Exception as exc:
+        status_code = _websocket_status_code(exc)
+        if status_code in {401, 403}:
+            return "auth_invalid", "LM Studio token rejected.", status_code
+        if status_code in {200, 400, 404, 405, 426}:
+            return "realtime_unsupported", "Local server does not expose /v1/realtime for this model/server.", status_code
+        return "realtime_unsupported", f"Realtime WebSocket upgrade failed: {_safe_detail(exc)}", status_code
+
+
+async def _qwen_omni_diagnostics() -> dict[str, object]:
+    error = _qwen_omni_url_error()
+    result: dict[str, object] = {
+        "configured": not bool(error),
+        "status": "not_configured" if error else "checking",
+        "message": error or "Checking Qwen3 Omni local realtime endpoint.",
+        "baseUrl": _qwen_omni_base_url(),
+        "model": QWEN_OMNI_MODEL,
+        "effectiveModel": QWEN_OMNI_MODEL,
+        "suggestedModel": "",
+        "modelsUrl": _qwen_omni_models_url() if not error else "",
+        "realtimeUrl": _qwen_omni_realtime_url() if not error else "",
+        "auth": {
+            "configured": bool(QWEN_OMNI_API_KEY),
+            "source": "QWEN_OMNI_API_KEY" if os.environ.get("QWEN_OMNI_API_KEY", "").strip() else (
+                "LM_STUDIO_API_KEY" if os.environ.get("LM_STUDIO_API_KEY", "").strip() else "none"
+            ),
+        },
+        "models": [],
+        "modelFound": False,
+        "httpStatus": None,
+        "websocketStatus": None,
+    }
+    if error:
+        return result
+
+    try:
+        async with httpx.AsyncClient(timeout=QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S) as http:
+            resp = await http.get(_qwen_omni_models_url(), headers=_qwen_omni_auth_headers())
+    except httpx.RequestError as exc:
+        result.update(status="upstream_unreachable", message=f"LM Studio is unreachable: {_safe_detail(exc)}")
+        return result
+
+    result["httpStatus"] = resp.status_code
+    if resp.status_code in {401, 403}:
+        result.update(status="auth_invalid", message="LM Studio token rejected.")
+        return result
+    if resp.status_code >= 400:
+        result.update(status="upstream_unreachable", message=f"LM Studio /v1/models returned HTTP {resp.status_code}.")
+        return result
+
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    models = [
+        str(item.get("id", "")).strip()
+        for item in data.get("data", [])
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    ] if isinstance(data, dict) else []
+    result["models"] = models[:50]
+    result["modelFound"] = QWEN_OMNI_MODEL in models
+    if not result["modelFound"]:
+        suggested = next((item for item in models if "qwen" in item.lower() and "omni" in item.lower()), "")
+        if suggested:
+            result["suggestedModel"] = suggested
+            result["effectiveModel"] = suggested
+    result.update(status="models_ok", message="LM Studio /v1/models accepted the configured token.")
+
+    status, message, ws_status = await _probe_qwen_omni_realtime()
+    result["websocketStatus"] = ws_status
+    result.update(status=status, message=message)
+    return result
 
 
 def _direct_config_for_request(request: Request) -> tuple[str, list[dict[str, object]]]:
@@ -493,6 +657,93 @@ async def config(request: Request):
         "runtime": RUNTIME_STACK,
         "auth": AUTH_ENABLED,
     }
+
+
+@app.get("/api/qwen-omni/config")
+async def qwen_omni_config():
+    """Public, secret-free config for the isolated Qwen3 Omni pilot page."""
+    return {
+        "configured": not bool(_qwen_omni_url_error()),
+        "model": QWEN_OMNI_MODEL,
+        "baseUrl": _qwen_omni_base_url(),
+        "realtimeUrl": _qwen_omni_realtime_url() if not _qwen_omni_url_error() else "",
+        "localOnly": QWEN_OMNI_REQUIRE_LOCAL,
+        "authConfigured": bool(QWEN_OMNI_API_KEY),
+    }
+
+
+@app.get("/api/qwen-omni/diagnostics")
+async def qwen_omni_diagnostics():
+    """Check local LM Studio/vLLM-Omni readiness without exposing API keys."""
+    return await _qwen_omni_diagnostics()
+
+
+@app.websocket("/api/qwen-omni/realtime")
+async def qwen_omni_realtime(websocket: WebSocket):
+    """Same-origin WebSocket proxy for the isolated Qwen3 Omni pilot UI."""
+    await websocket.accept()
+    error = _qwen_omni_url_error()
+    if error:
+        await websocket.send_json({"type": "error", "status": "not_configured", "error": error})
+        await websocket.close(code=1008)
+        return
+
+    try:
+        async with websockets.connect(
+            _qwen_omni_realtime_url(),
+            additional_headers=_qwen_omni_auth_headers(),
+            open_timeout=QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S,
+            close_timeout=1.0,
+            max_size=QWEN_OMNI_WS_MAX_BYTES,
+        ) as upstream:
+            await websocket.send_json({"type": "proxy.ready", "model": QWEN_OMNI_MODEL})
+
+            async def browser_to_upstream() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        break
+                    text = message.get("text")
+                    if text is not None:
+                        await upstream.send(text)
+                        continue
+                    data = message.get("bytes")
+                    if data is not None:
+                        await upstream.send(data)
+
+            async def upstream_to_browser() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            done, pending = await asyncio.wait(
+                {
+                    asyncio.create_task(browser_to_upstream()),
+                    asyncio.create_task(upstream_to_browser()),
+                },
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        status_code = _websocket_status_code(exc)
+        status = "auth_invalid" if status_code in {401, 403} else "realtime_unsupported"
+        message = "LM Studio token rejected." if status == "auth_invalid" else f"Realtime endpoint failed: {_safe_detail(exc)}"
+        try:
+            await websocket.send_json({"type": "error", "status": status, "error": message, "upstreamStatus": status_code})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/api/me")

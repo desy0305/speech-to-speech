@@ -155,9 +155,9 @@ async function connect() {
     if (diag.status !== "realtime_supported") {
       const hint = diag.status === "auth_invalid"
         ? "LM Studio token rejected."
-        : diag.status === "realtime_unsupported"
-          ? "Local server does not expose /v1/realtime for this model/server."
-          : String(diag.message || "Qwen3 Omni realtime endpoint is unavailable.");
+        : diag.status === "realtime_unsupported" && String(diag.message || "").includes("LM Studio")
+          ? "LM Studio realtime unsupported."
+        : String(diag.message || "Qwen3 Omni realtime endpoint is unavailable.");
       setState(hint, "error");
       return;
     }

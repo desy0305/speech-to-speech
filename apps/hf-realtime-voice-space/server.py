@@ -141,6 +141,12 @@ QWEN_OMNI_REQUIRE_LOCAL = os.environ.get("QWEN_OMNI_REQUIRE_LOCAL", "1").strip()
 }
 QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S = _bounded_float_env("QWEN_OMNI_DIAGNOSTIC_TIMEOUT_S", 4.0, 1.0, 30.0)
 QWEN_OMNI_WS_MAX_BYTES = _bounded_int_env("QWEN_OMNI_WS_MAX_BYTES", 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024)
+QWEN_OMNI_REST_ONLY_MESSAGE = (
+    "LM Studio accepted the token and serves Qwen3 Omni through REST chat/responses, "
+    "but its local server does not implement the OpenAI Realtime WebSocket API "
+    "(/v1/realtime) or audio STT/TTS endpoints. Realtime speech-to-speech for this "
+    "model needs a separate local runtime that exposes /v1/realtime, such as vLLM-Omni."
+)
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -359,7 +365,9 @@ async def _probe_qwen_omni_realtime() -> tuple[str, str, int | None]:
         status_code = _websocket_status_code(exc)
         if status_code in {401, 403}:
             return "auth_invalid", "LM Studio token rejected.", status_code
-        if status_code in {200, 400, 404, 405, 426}:
+        if status_code == 200:
+            return "realtime_unsupported", QWEN_OMNI_REST_ONLY_MESSAGE, status_code
+        if status_code in {400, 404, 405, 426}:
             return "realtime_unsupported", "Local server does not expose /v1/realtime for this model/server.", status_code
         return "realtime_unsupported", f"Realtime WebSocket upgrade failed: {_safe_detail(exc)}", status_code
 

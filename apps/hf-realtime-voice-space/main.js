@@ -46,16 +46,19 @@ const MCP_USE_HINT =
   "browser_browse for one-page inspection. For multi-step browser work, use " +
   "mcp_call with an ordered calls array so navigation, " +
   "waiting, snapshots, and console checks happen in one MCP session. Memory MCP " +
-  "is a persistent knowledge graph, not chat context. For recall questions like " +
-  "what do you remember, where are we from, or what do you know about a " +
-  "person/project, call memory_recall first. Do not send a long combined natural " +
-  "language query to search_nodes. memory_recall fans out to short Cyrillic and " +
-  "Latin/transliterated queries and returns compact verified context. Do not claim " +
-  "you remember a fact unless it appears in the tool result. For save requests " +
-  "like remember, save, note, or update this, call memory_remember with structured " +
-  "entities, observations, and relations, then wait for its verified result before " +
-  "saying it was saved. Raw graph tools remain available for diagnostics through " +
-  "mcp_call. Use create_relations only after both endpoint entities exist. " +
+  "is a persistent knowledge graph, not chat context. Prefer the direct memory " +
+  "tools search_nodes, open_nodes, create_entities, add_observations, and " +
+  "create_relations when they are available. For recall questions like what do " +
+  "you remember, where are we from, or what do you know about a person/project, " +
+  "call search_nodes first with the user's keywords; if you know an exact entity " +
+  "name, call open_nodes. For Bulgarian or mixed-language recall, try both " +
+  "Cyrillic and Latin/transliterated queries before concluding there is no memory " +
+  "(for example Пловдив and Plovdiv, Матееви and Mateevi). Do not claim you " +
+  "remember a fact unless it appears in the tool result. For save requests like " +
+  "remember, save, note, or update this, first search for the relevant entity. " +
+  "If it exists, call add_observations with concise factual strings. If it does " +
+  "not exist, call create_entities. Then verify with open_nodes or search_nodes " +
+  "before saying it was saved. Use create_relations only after both endpoint entities exist. " +
   "Memory schema exactly: search_nodes {query}; open_nodes {names:[...]}; " +
   "create_entities {entities:[{name,entityType,observations:[...]}]}; " +
   "add_observations {observations:[{entityName,contents:[...]}]}; " +
@@ -157,72 +160,6 @@ const TOOL_DEFS = {
       "Use this when the user asks what tools, MCP servers, browser tools, Playwright tools, " +
       "or environment capabilities you can see.",
     parameters: { type: "object", properties: {}, required: [] },
-  },
-  memory_recall: {
-    type: "function",
-    name: "memory_recall",
-    description:
-      "Recall persistent MCP memory through the backend memory facade. Use this first for questions like what you remember, what you know about the user/family/project, where the user is from, or whether something was saved. It tries short exact, alias, Cyrillic, and Latin queries and returns verified compact context.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "The user's recall question or topic." },
-        hints: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional entity hints, aliases, names, places, or project names.",
-        },
-        language: { type: "string", description: "Optional language hint, e.g. bg or en." },
-      },
-      required: ["query"],
-    },
-  },
-  memory_remember: {
-    type: "function",
-    name: "memory_remember",
-    description:
-      "Save or update persistent MCP memory through the backend memory facade. Use when the user asks to remember/save/update durable facts. Provide concise factual entities, observations, and relations. The backend dedupes and verifies before returning.",
-    parameters: {
-      type: "object",
-      properties: {
-        entities: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              entityType: { type: "string" },
-              observations: { type: "array", items: { type: "string" } },
-            },
-            required: ["name", "entityType", "observations"],
-          },
-        },
-        observations: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              entityName: { type: "string" },
-              contents: { type: "array", items: { type: "string" } },
-            },
-            required: ["entityName", "contents"],
-          },
-        },
-        relations: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              from: { type: "string" },
-              to: { type: "string" },
-              relationType: { type: "string" },
-            },
-            required: ["from", "to", "relationType"],
-          },
-        },
-      },
-      required: [],
-    },
   },
   browser_browse: {
     type: "function",
@@ -445,14 +382,6 @@ const DIRECT_MCP_TOOL_DEFS = {
   },
 };
 
-const RAW_MEMORY_TOOL_NAMES = new Set([
-  "search_nodes",
-  "open_nodes",
-  "create_entities",
-  "add_observations",
-  "create_relations",
-]);
-
 function mcpToolDef() {
   const allowedNames = Array.isArray(mcpConfig.allowedTools) ? mcpConfig.allowedTools : [];
   const allowed = allowedNames.join(", ");
@@ -463,9 +392,12 @@ function mcpToolDef() {
       "Use this when an allowlisted Docker MCP tool is needed and no simpler direct browser tool fits. " +
       "For multi-step browser flows, pass a calls array so navigate, wait, snapshot, console, " +
       "network, click, type, and screenshot actions run in one gateway session. " +
-      "For normal memory recall, prefer memory_recall instead of raw search_nodes. " +
-      "For normal memory writes, prefer memory_remember instead of raw create_entities/add_observations. " +
-      "Use raw memory tools here only for diagnostics or precise low-level graph edits. " +
+      "For memory recall, call search_nodes with {query} or open_nodes with {names:[...]}. " +
+      "Prefer direct memory tools when they are available; use mcp_call when you need ordered batching. " +
+      "For Bulgarian or mixed-language recall, search both Cyrillic and Latin/transliterated forms before saying no memory was found. " +
+      "For memory writes, search first; then use create_entities for new entities or " +
+      "add_observations for existing entities, and verify with open_nodes/search_nodes before " +
+      "telling the user it was saved. Use create_relations only after both entities exist. " +
       "Memory schemas: create_entities {entities:[{name,entityType,observations:[...]}]}; " +
       "add_observations {observations:[{entityName,contents:[...]}]}; " +
       "create_relations {relations:[{from,to,relationType}]}; " +
@@ -792,17 +724,10 @@ function mcpFriendlyToolDefs() {
   const allowed = allowedMcpToolNames();
   /** @type {import("./ws/s2s-ws-client.js").ToolDef[]} */
   const defs = [];
-  if (allowed.has("search_nodes")) {
-    defs.push(TOOL_DEFS.memory_recall);
-  }
-  if (allowed.has("open_nodes") && allowed.has("create_entities") && allowed.has("add_observations")) {
-    defs.push(TOOL_DEFS.memory_remember);
-  }
   if (allowed.has("browser_navigate") && allowed.has("browser_snapshot")) {
     defs.push(TOOL_DEFS.browser_browse);
   }
   for (const [name, def] of Object.entries(DIRECT_MCP_TOOL_DEFS)) {
-    if (RAW_MEMORY_TOOL_NAMES.has(name)) continue;
     if (allowed.has(name)) defs.push(def);
   }
   return defs;
@@ -1377,12 +1302,6 @@ async function runTool(name, argsJson, callId) {
     } else if (name === "mcp_list_tools") {
       result.output = await execMcpListTools();
       client.sendToolOutput(callId, result.output);
-    } else if (name === "memory_recall") {
-      result.output = await execMemoryRecall(args);
-      client.sendToolOutput(callId, result.output);
-    } else if (name === "memory_remember") {
-      result.output = await execMemoryRemember(args);
-      client.sendToolOutput(callId, result.output);
     } else if (name === "browser_browse") {
       result.output = await execBrowserBrowse(args);
       client.sendToolOutput(callId, result.output);
@@ -1501,46 +1420,11 @@ async function execMcpListTools() {
       usageHint:
         tools.healthy === false
           ? "The Docker MCP gateway is configured but offline. Start it with scripts/start-mcp-gateway.ps1, then retry."
-          : "For normal memory recall use memory_recall first; it expands short Cyrillic and Latin/transliterated queries and returns compact verified context. For memory writes use memory_remember; it dedupes and verifies. Raw memory tools remain available through mcp_call for diagnostics. Use browser_browse for one-step page inspection, or mcp_call with a calls array for stateful Playwright/browser flows and advanced allowlisted MCP calls.",
+          : "For memory recall use the direct search_nodes/open_nodes tools. For Bulgarian recall, try both Cyrillic and Latin forms before saying nothing was found. For memory writes, search first, write with create_entities or add_observations, then verify with open_nodes/search_nodes before saying it was saved. Use browser_browse for one-step page inspection, or mcp_call with a calls array for stateful Playwright/browser flows and advanced allowlisted MCP calls.",
     },
     null,
     2,
   );
-}
-
-/** @param {Record<string, unknown>} args @returns {Promise<string>} */
-async function execMemoryRecall(args) {
-  const body = {
-    query: typeof args.query === "string" ? args.query : "",
-    hints: Array.isArray(args.hints) ? args.hints.filter((item) => typeof item === "string") : [],
-    language: typeof args.language === "string" ? args.language : "",
-  };
-  const res = await fetch("api/memory/recall", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) return `Memory recall failed: ${json.detail || res.status}`;
-  return JSON.stringify(json, null, 2);
-}
-
-/** @param {Record<string, unknown>} args @returns {Promise<string>} */
-async function execMemoryRemember(args) {
-  const body = {
-    entities: Array.isArray(args.entities) ? args.entities : [],
-    observations: Array.isArray(args.observations) ? args.observations : [],
-    relations: Array.isArray(args.relations) ? args.relations : [],
-    verify: true,
-  };
-  const res = await fetch("api/memory/remember", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) return `Memory write failed: ${json.detail || res.status}`;
-  return JSON.stringify(json, null, 2);
 }
 
 async function execBrowserBrowse(args) {

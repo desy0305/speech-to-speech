@@ -78,6 +78,12 @@ automatically rewrites the named presets:
 - `LM Studio (local)` -> `https://<host>:7862/s2s/v1/realtime`
 - `LM Studio + BG TTS (Ani)` -> `https://<host>:7862/s2s-bg/v1/realtime`
 
+In the common BG Ani LAN setup, only `backend-lmstudio-bgtts` may be running.
+The HTTPS proxy keeps `/s2s/v1/realtime` as a compatibility alias to that active
+backend, so saved browser settings from the default preset still open a working
+realtime socket. `/s2s-bg/v1/realtime` is the explicit BG Ani route and should
+be preferred for new settings.
+
 The old `http://localhost:8765` and `http://localhost:8766` preset URLs remain as
 aliases, so browsers with saved settings migrate to the LAN-safe preset URL
 instead of showing `Custom backend URL`.
@@ -231,17 +237,13 @@ When `MCP_GATEWAY_URL` is configured, MCP is enabled by default and is visible i
 the Tools modal as `Docker MCP / Playwright`; the same switch also appears in
 Settings as `Allow model to call MCP tools`. The current allowlist gives the
 assistant Docker MCP discovery/profile tools plus basic Playwright browsing
-controls. For normal user/profile memory, the assistant should use the higher
-level `memory_recall` and `memory_remember` tools. They call the MCP Memory
-server through the UI backend, expand short alias queries, dedupe repeated
-observations, and verify writes before the model claims success. Raw graph
-tools (`search_nodes`, `open_nodes`, `create_entities`, `add_observations`,
-`create_relations`) stay allowlisted for diagnostics through `mcp_call`, but are
-not advertised as the easiest direct path. Tune default recall aliases with
-`MEMORY_DEFAULT_RECALL_QUERIES` in `.env`; for Bulgarian users include both
-Cyrillic and Latin/transliterated forms such as `Пловдив`/`Plovdiv` and
-`Матееви`/`Mateevi`. `browser_run_code_unsafe`, arbitrary evaluate, file upload,
-and drop tools are intentionally not allowlisted.
+controls. Memory tools are exposed twice on purpose: as direct first-class tools
+(`search_nodes`, `open_nodes`, `create_entities`, `add_observations`,
+`create_relations`) for reliable local-model use, and through the generic
+`mcp_call` wrapper for ordered batches such as write-then-verify. Bulgarian
+memory recall should search both Cyrillic and Latin/transliterated forms before
+concluding no memory exists. `browser_run_code_unsafe`, arbitrary evaluate, file
+upload, and drop tools are intentionally not allowlisted.
 
 ## VRAM Notes
 

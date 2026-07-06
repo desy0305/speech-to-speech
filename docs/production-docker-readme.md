@@ -106,6 +106,12 @@ Accept or trust the self-signed certificate on the client machine. For an
 internet-facing server, replace this with a real certificate and a normal
 reverse proxy.
 
+The LAN proxy exposes both realtime paths through the same HTTPS origin:
+`/s2s/v1/realtime` and `/s2s-bg/v1/realtime`. In a BG Ani-only local run,
+`/s2s/v1/realtime` is kept as a compatibility alias to
+`backend-lmstudio-bgtts` so saved browser settings do not point at a dead
+Docker service.
+
 ## Memory And MCP
 
 MCP tools are exposed through the Docker MCP gateway. The app can show "gateway
@@ -125,29 +131,11 @@ persistent storage.
 
 Useful memory tools:
 
-- `memory_recall` - preferred model-facing recall facade
-- `memory_remember` - preferred model-facing write/upsert facade
 - `search_nodes`
 - `open_nodes`
 - `create_entities`
 - `create_relations`
 - `add_observations`
-
-`memory_recall` and `memory_remember` are implemented by the UI backend and call
-the raw MCP Memory graph tools for the model. This is more reliable than asking
-the LLM to invent one perfect `search_nodes` query. Recall fans out to compact
-aliases and returns `queriesTried`, entities, relations, and a short summary.
-Remember/upsert opens existing nodes first, skips duplicate observations, writes
-only missing facts, and verifies with `open_nodes`.
-
-Tune the default user/family/project aliases in `.env`:
-
-```env
-MEMORY_DEFAULT_RECALL_QUERIES=User,Lazar,Лазар,Lazar Mateev,Лазар Матеев,Mateevi family,Семейство Матееви,Mateevi,Матееви
-MEMORY_RECALL_MAX_QUERIES=10
-MEMORY_RECALL_MAX_ENTITIES=12
-MEMORY_RECALL_MAX_OBSERVATIONS=8
-```
 
 ## Current Context And Audio Defaults
 
@@ -238,11 +226,10 @@ Expected:
   The Docker MCP Memory server stores durable state in the `claude-memory`
   Docker volume at `/app/dist/memory.json`; if that volume is missing or was
   removed, memory starts blank even though the voice app is healthy.
-- Local models get high-level `memory_recall` and `memory_remember` tools backed
-  by the MCP Memory graph. Keep all five raw memory tool names in
-  `MCP_ALLOWED_TOOLS`; the facade uses them internally and `mcp_call` keeps them
-  available for diagnostics. For Bulgarian users, include Cyrillic and Latin
-  aliases such as `Пловдив`/`Plovdiv` and `Матееви`/`Mateevi` in
-  `MEMORY_DEFAULT_RECALL_QUERIES`.
+- Local models get first-class memory tools (`search_nodes`, `open_nodes`,
+  `create_entities`, `add_observations`, `create_relations`) plus the generic
+  `mcp_call` wrapper. Keep all five memory tool names in `MCP_ALLOWED_TOOLS`.
+  For Bulgarian users, memory recall should search Cyrillic and Latin forms
+  such as `Пловдив`/`Plovdiv` and `Матееви`/`Mateevi`.
 - If Ani BG audio starts slowly, check `ani-voice-api` logs for repeated model
   loads. The cached sidecar should preload models and cache speaker embeddings.

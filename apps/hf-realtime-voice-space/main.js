@@ -699,6 +699,7 @@ let visionConfig = {
   configured: false,
   status: "disabled",
   message: "Visual observer is disabled.",
+  healthy: false,
   intervalMs: 2000,
   maxContextChars: 1200,
   maxImageBytes: 1500000,
@@ -1164,13 +1165,14 @@ function syncToolsUi() {
   const mcpAvail = mcpConfigured();
   const mcpReady = mcpGatewayHealthy();
   const visionAvail = !!visionConfig.enabled && !!visionConfig.configured;
+  const visionHealthy = visionConfig.healthy !== false;
   toolWebSwitch.checked = toolsEnabled.web_search && avail;
   toolWebSwitch.disabled = !avail;
   toolWebRow.classList.toggle("disabled", !avail);
   toolCamSwitch.checked = toolsEnabled.camera_snapshot;
   toolVisionSwitch.checked = toolsEnabled.visual_observer && visionAvail;
-  toolVisionSwitch.disabled = !visionAvail || !toolsEnabled.camera_snapshot;
-  toolVisionRow.classList.toggle("disabled", !visionAvail || !toolsEnabled.camera_snapshot);
+  toolVisionSwitch.disabled = !visionAvail;
+  toolVisionRow.classList.toggle("disabled", !visionAvail);
   toolVisionInterval.value = String(currentVisionIntervalMs());
   toolVisionInterval.disabled = !visionAvail;
   toolMcpSwitch.checked = settings.mcpEnabled && mcpAvail;
@@ -1206,10 +1208,16 @@ function syncToolsUi() {
     toolMcpHint.textContent = "Not configured. Start the Docker MCP gateway and set MCP_GATEWAY_URL in .env.";
   }
 
+  const visionMessageRaw = cleanString(visionConfig.message) || "SmolVLM local server is offline.";
+  const visionMessage = /[.!?]$/.test(visionMessageRaw) ? visionMessageRaw : `${visionMessageRaw}.`;
   if (!visionAvail) {
     toolVisionHint.textContent = cleanString(visionConfig.message) || "Set VISION_OBSERVER_ENABLED=1 and run local SmolVLM.";
+  } else if (!visionHealthy && toolsEnabled.visual_observer) {
+    toolVisionHint.textContent = `${visionMessage} Start SmolVLM and refresh config; voice chat remains available.`;
+  } else if (!visionHealthy) {
+    toolVisionHint.textContent = `${visionMessage} The switch is available, but observations need the local server.`;
   } else if (!toolsEnabled.camera_snapshot) {
-    toolVisionHint.textContent = "Turn on Camera first. The observer reuses the same local webcam preview.";
+    toolVisionHint.textContent = "Turning this on also starts the local webcam preview.";
   } else if (toolsEnabled.visual_observer) {
     const age = visionObserverLastAt ? `${Math.max(0, Math.round((Date.now() - visionObserverLastAt) / 1000))}s ago` : "not yet";
     toolVisionHint.textContent = visionObservations.length
@@ -1265,13 +1273,34 @@ toolCamSwitch.addEventListener("change", async () => {
   pushToolsToSession();
 });
 
-toolVisionSwitch.addEventListener("change", () => {
-  if (toolVisionSwitch.checked && (!visionConfig.enabled || !visionConfig.configured || !toolsEnabled.camera_snapshot)) {
+toolVisionSwitch.addEventListener("change", async () => {
+  if (toolVisionSwitch.checked && (!visionConfig.enabled || !visionConfig.configured)) {
     toolVisionSwitch.checked = false;
     syncToolsUi();
     return;
   }
   toolsEnabled.visual_observer = toolVisionSwitch.checked;
+  if (toolsEnabled.visual_observer && !toolsEnabled.camera_snapshot) {
+    try {
+      await enableCamera();
+      toolsEnabled.camera_snapshot = true;
+      toolCamHint.textContent = "Camera on. The observer can keep the local scene summary updated.";
+    } catch (err) {
+      toolsEnabled.visual_observer = false;
+      toolsEnabled.camera_snapshot = false;
+      toolVisionSwitch.checked = false;
+      const denied = err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError");
+      toolVisionHint.textContent = denied
+        ? "Camera blocked. Allow camera access before enabling the visual observer."
+        : `Camera unavailable${err instanceof Error ? `: ${err.message}` : ""}`;
+      saveTools();
+      syncToolsUi();
+      toolVisionHint.textContent = denied
+        ? "Camera blocked. Allow camera access before enabling the visual observer."
+        : `Camera unavailable${err instanceof Error ? `: ${err.message}` : ""}`;
+      return;
+    }
+  }
   saveTools();
   maybeStartVisionObserver();
   if (client && LIVE_STATES.has(currentState)) {
@@ -1729,6 +1758,7 @@ async function fetchVisionObserverConfig() {
     visionConfig = {
       enabled: !!json.enabled,
       configured: !!json.configured,
+      healthy: json.healthy !== false,
       status: cleanString(json.status) || "unknown",
       message: cleanString(json.message),
       intervalMs: Number(json.intervalMs) || 2000,
@@ -1740,6 +1770,7 @@ async function fetchVisionObserverConfig() {
       ...visionConfig,
       enabled: false,
       configured: false,
+      healthy: false,
       status: "offline",
       message: err instanceof Error ? err.message : String(err),
     };
@@ -2236,7 +2267,6 @@ function syncBackendPresetUi(url = settings.directUrl) {
       ? ` (${preset.availability})`
       : "";
     option.textContent = `${preset.label}${status}`;
-    option.disabled = preset.availability === "offline";
     backendPresetSelect.append(option);
   }
 
@@ -2246,7 +2276,7 @@ function syncBackendPresetUi(url = settings.directUrl) {
 
   const pending = hasRestartRequiredChanges();
   if (preset?.availability === "offline") {
-    backendPresetHint.textContent = `${preset.label} is offline. ${preset.availabilityDetail || "Start its Docker profile, then refresh."}`;
+    backendPresetHint.textContent = `${preset.label} is selected but offline. ${preset.availabilityDetail || "Start its Docker profile, then refresh."}`;
   } else if (preset && preset.id !== "custom" && preset.url) {
     backendPresetHint.textContent = pending && activeSession
       ? `Pending endpoint: ${preset.url}. Active until restart: ${activeSession.directUrl}`

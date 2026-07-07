@@ -148,7 +148,7 @@ QWEN_OMNI_REST_ONLY_MESSAGE = (
     "model needs a separate local runtime that exposes /v1/realtime, such as vLLM-Omni."
 )
 BACKEND_PRESET_HEALTH_TIMEOUT_S = _bounded_float_env("BACKEND_PRESET_HEALTH_TIMEOUT_S", 0.6, 0.1, 5.0)
-VISION_OBSERVER_ENABLED = os.environ.get("VISION_OBSERVER_ENABLED", "0").strip().lower() in {
+VISION_OBSERVER_ENABLED = os.environ.get("VISION_OBSERVER_ENABLED", "1").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -377,6 +377,10 @@ def _smolvlm_chat_url() -> str:
     return f"{_smolvlm_base_url()}/v1/chat/completions"
 
 
+def _smolvlm_models_url() -> str:
+    return f"{_smolvlm_base_url()}/v1/models"
+
+
 def _qwen_omni_models_url() -> str:
     return f"{_qwen_omni_base_url()}/models"
 
@@ -526,7 +530,8 @@ async def _backend_preset_availability(presets: list[dict[str, object]]) -> list
             ) as http:
                 resp = await http.get(url)
         except httpx.RequestError as exc:
-            return "offline", f"Health check unreachable: {_safe_detail(exc)}"
+            detail = _safe_detail(exc) or exc.__class__.__name__
+            return "offline", f"Health check unreachable: {detail}"
         if resp.status_code >= 500:
             return "offline", f"Health check returned HTTP {resp.status_code}."
         return "available", f"Health check returned HTTP {resp.status_code}."
@@ -763,13 +768,38 @@ async def config(request: Request):
 async def vision_observer_config():
     error = _smolvlm_url_error()
     enabled = VISION_OBSERVER_ENABLED and not bool(error)
+    healthy = False
+    health_detail = ""
+    if enabled:
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(BACKEND_PRESET_HEALTH_TIMEOUT_S, connect=BACKEND_PRESET_HEALTH_TIMEOUT_S)
+            ) as http:
+                resp = await http.get(_smolvlm_models_url())
+            healthy = resp.status_code < 500
+            health_detail = f"SmolVLM health check returned HTTP {resp.status_code}."
+        except httpx.RequestError as exc:
+            health_detail = f"SmolVLM local server unreachable: {_safe_detail(exc) or exc.__class__.__name__}"
+
+    if not VISION_OBSERVER_ENABLED:
+        status = "disabled"
+        message = "Visual observer feature is disabled by VISION_OBSERVER_ENABLED=0."
+    elif error:
+        status = "invalid_config"
+        message = error
+    elif healthy:
+        status = "ready"
+        message = "Visual observer is ready."
+    else:
+        status = "offline"
+        message = health_detail or "SmolVLM local server is offline."
+
     return {
         "enabled": enabled,
         "configured": enabled,
-        "status": "ready" if enabled else ("disabled" if not VISION_OBSERVER_ENABLED else "invalid_config"),
-        "message": error or (
-            "Visual observer is ready." if enabled else "Visual observer is disabled. Set VISION_OBSERVER_ENABLED=1."
-        ),
+        "healthy": healthy,
+        "status": status,
+        "message": message,
         "model": SMOLVLM_MODEL,
         "intervalMs": VISION_OBSERVER_INTERVAL_MS,
         "maxContextChars": VISION_OBSERVER_MAX_CONTEXT_CHARS,
@@ -812,7 +842,10 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
         async with httpx.AsyncClient(timeout=VISION_OBSERVER_TIMEOUT_S) as http:
             resp = await http.post(_smolvlm_chat_url(), json=payload)
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"SmolVLM local server unreachable: {_safe_detail(exc)}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"SmolVLM local server unreachable: {_safe_detail(exc) or exc.__class__.__name__}",
+        ) from exc
     if resp.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"SmolVLM returned HTTP {resp.status_code}: {resp.text[:300]}")
 

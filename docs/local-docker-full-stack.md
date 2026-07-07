@@ -91,10 +91,11 @@ instead of showing `Custom backend URL`.
 
 ## Optional Visual Observer
 
-The visual observer is disabled by default and does not replace the modular
-STT/TTS/LLM speech stack. When enabled, it reuses the webcam preview, sends
-periodic JPEG frames to a local SmolVLM `llama-server`, keeps only a capped
-rolling summary, and injects that hidden summary into the active instructions.
+The visual observer feature is available by default, but the browser toggle is
+off until you turn it on. It does not replace the modular STT/TTS/LLM speech
+stack. When enabled, it reuses the webcam preview, sends periodic JPEG frames to
+a local SmolVLM `llama-server`, keeps only a capped rolling summary, and
+injects that hidden summary into the active instructions.
 
 Start SmolVLM outside Docker:
 
@@ -106,14 +107,14 @@ Add `-ngl 99` if you want llama.cpp to offload layers to a supported GPU.
 Then set:
 
 ```env
-VISION_OBSERVER_ENABLED=1
 SMOLVLM_BASE_URL=http://host.docker.internal:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
 ```
 
 The app calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
 `image_url` content. Keep `SMOLVLM_REQUIRE_LOCAL=1` unless you intentionally
-want to allow a non-local vision endpoint.
+want to allow a non-local vision endpoint. Set `VISION_OBSERVER_ENABLED=0` only
+when you want to hide the feature entirely.
 
 If another computer cannot reach the proxy, allow the HTTPS port on the host:
 

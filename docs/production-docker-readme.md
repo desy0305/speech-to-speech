@@ -115,10 +115,11 @@ the other preset offline instead of proxying it to the wrong stack.
 
 ## Optional Visual Observer
 
-The visual observer is off by default. It is a local-only helper that sends
-periodic webcam frames to a separate SmolVLM `llama-server` and injects a capped
-rolling visual summary into the main assistant instructions. It does not change
-STT, TTS, or the selected LLM provider.
+The visual observer feature is available by default, but the browser toggle is
+off until you turn it on. It is a local-only helper that sends periodic webcam
+frames to a separate SmolVLM `llama-server` and injects a capped rolling visual
+summary into the main assistant instructions. It does not change STT, TTS, or
+the selected LLM provider.
 
 Start the vision model outside compose:
 
@@ -129,7 +130,6 @@ llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF --port 8080
 Then enable the observer in `.env`:
 
 ```env
-VISION_OBSERVER_ENABLED=1
 SMOLVLM_BASE_URL=http://host.docker.internal:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
 SMOLVLM_REQUIRE_LOCAL=1
@@ -137,6 +137,7 @@ SMOLVLM_REQUIRE_LOCAL=1
 
 The UI server calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
 `image_url` content, matching llama.cpp's OpenAI-compatible multimodal route.
+Set `VISION_OBSERVER_ENABLED=0` only when you want to hide the feature entirely.
 
 ## Memory And MCP
 

@@ -147,6 +147,33 @@ QWEN_OMNI_REST_ONLY_MESSAGE = (
     "(/v1/realtime) or audio STT/TTS endpoints. Realtime speech-to-speech for this "
     "model needs a separate local runtime that exposes /v1/realtime, such as vLLM-Omni."
 )
+BACKEND_PRESET_HEALTH_TIMEOUT_S = _bounded_float_env("BACKEND_PRESET_HEALTH_TIMEOUT_S", 0.6, 0.1, 5.0)
+VISION_OBSERVER_ENABLED = os.environ.get("VISION_OBSERVER_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+}
+SMOLVLM_BASE_URL = os.environ.get("SMOLVLM_BASE_URL", "http://host.docker.internal:8080").strip()
+SMOLVLM_MODEL = os.environ.get("SMOLVLM_MODEL", "ggml-org/SmolVLM-500M-Instruct-GGUF").strip()
+SMOLVLM_REQUIRE_LOCAL = os.environ.get("SMOLVLM_REQUIRE_LOCAL", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+VISION_OBSERVER_TIMEOUT_S = _bounded_float_env("VISION_OBSERVER_TIMEOUT_S", 6.0, 1.0, 30.0)
+VISION_OBSERVER_INTERVAL_MS = _bounded_int_env("VISION_OBSERVER_INTERVAL_MS", 2000, 500, 30000)
+VISION_OBSERVER_MAX_CONTEXT_CHARS = _bounded_int_env("VISION_OBSERVER_MAX_CONTEXT_CHARS", 1200, 200, 4000)
+VISION_OBSERVER_MAX_IMAGE_BYTES = _bounded_int_env("VISION_OBSERVER_MAX_IMAGE_BYTES", 1_500_000, 64_000, 5_000_000)
+VISION_OBSERVER_MAX_TOKENS = _bounded_int_env("VISION_OBSERVER_MAX_TOKENS", 120, 20, 512)
+VISION_OBSERVER_PROMPT = os.environ.get(
+    "VISION_OBSERVER_PROMPT",
+    "Describe the current webcam scene in one compact factual sentence. "
+    "Mention only visible people, objects, text, actions, and changes. "
+    "If uncertain, say so briefly.",
+).strip()
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -170,7 +197,7 @@ def _parse_backend_presets() -> list[dict[str, str]]:
         return []
 
     presets: list[dict[str, str]] = []
-    allowed = {"id", "label", "url", "llmProvider", "llmModel", "stt", "tts"}
+    allowed = {"id", "label", "url", "llmProvider", "llmModel", "stt", "tts", "healthUrl"}
     for item in data:
         if not isinstance(item, dict):
             continue
@@ -328,6 +355,28 @@ def _qwen_omni_auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {QWEN_OMNI_API_KEY}"} if QWEN_OMNI_API_KEY else {}
 
 
+def _smolvlm_base_url() -> str:
+    return SMOLVLM_BASE_URL.rstrip("/")
+
+
+def _smolvlm_url_error() -> str:
+    if not VISION_OBSERVER_ENABLED:
+        return ""
+    base_url = _smolvlm_base_url()
+    if not base_url:
+        return "Visual observer is enabled but SMOLVLM_BASE_URL is empty."
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "SMOLVLM_BASE_URL must be an http(s) URL."
+    if SMOLVLM_REQUIRE_LOCAL and not _is_localish_host(parsed.hostname or ""):
+        return "SMOLVLM_BASE_URL must point to localhost, host.docker.internal, or a private LAN address."
+    return ""
+
+
+def _smolvlm_chat_url() -> str:
+    return f"{_smolvlm_base_url()}/v1/chat/completions"
+
+
 def _qwen_omni_models_url() -> str:
     return f"{_qwen_omni_base_url()}/models"
 
@@ -465,6 +514,43 @@ def _direct_config_for_request(request: Request) -> tuple[str, list[dict[str, ob
     active_url = route_by_id.get(active_backend) or lmstudio_url
     return active_url or direct_url, presets
 
+
+async def _backend_preset_availability(presets: list[dict[str, object]]) -> list[dict[str, object]]:
+    async def probe(url: str) -> tuple[str, str]:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return "unknown", "No health check configured."
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(BACKEND_PRESET_HEALTH_TIMEOUT_S, connect=BACKEND_PRESET_HEALTH_TIMEOUT_S)
+            ) as http:
+                resp = await http.get(url)
+        except httpx.RequestError as exc:
+            return "offline", f"Health check unreachable: {_safe_detail(exc)}"
+        if resp.status_code >= 500:
+            return "offline", f"Health check returned HTTP {resp.status_code}."
+        return "available", f"Health check returned HTTP {resp.status_code}."
+
+    checks = []
+    check_indexes = []
+    sanitized: list[dict[str, object]] = []
+    for preset in presets:
+        item = {key: value for key, value in preset.items() if key != "healthUrl"}
+        item.setdefault("availability", "unknown")
+        item.setdefault("availabilityDetail", "No health check configured.")
+        health_url = str(preset.get("healthUrl", "")).strip()
+        if health_url:
+            check_indexes.append(len(sanitized))
+            checks.append(probe(health_url))
+        sanitized.append(item)
+
+    if checks:
+        for index, (availability, detail) in zip(check_indexes, await asyncio.gather(*checks)):
+            sanitized[index]["availability"] = availability
+            sanitized[index]["availabilityDetail"] = detail
+    return sanitized
+
+
 app = FastAPI(title="s2s-demo")
 
 
@@ -517,6 +603,11 @@ class McpCallRequest(BaseModel):
 class ProviderModelLoadRequest(BaseModel):
     model: str
     context_length: int | None = None
+
+
+class VisionAnalyzeRequest(BaseModel):
+    image: str
+    instruction: str | None = None
 
 
 def _default_search_provider() -> str:
@@ -644,6 +735,7 @@ async def config(request: Request):
     s2s server URL. The LB address itself is intentionally NOT included."""
     mcp_health = await _mcp_health_snapshot(timeout_s=0.8)
     direct_url, backend_presets = _direct_config_for_request(request)
+    backend_presets = await _backend_preset_availability(backend_presets)
     return {
         "search": bool(TAVILY_KEY or SERPER_KEY),
         "searchProvider": _default_search_provider(),
@@ -665,6 +757,84 @@ async def config(request: Request):
         "runtime": RUNTIME_STACK,
         "auth": AUTH_ENABLED,
     }
+
+
+@app.get("/api/vision-observer/config")
+async def vision_observer_config():
+    error = _smolvlm_url_error()
+    enabled = VISION_OBSERVER_ENABLED and not bool(error)
+    return {
+        "enabled": enabled,
+        "configured": enabled,
+        "status": "ready" if enabled else ("disabled" if not VISION_OBSERVER_ENABLED else "invalid_config"),
+        "message": error or (
+            "Visual observer is ready." if enabled else "Visual observer is disabled. Set VISION_OBSERVER_ENABLED=1."
+        ),
+        "model": SMOLVLM_MODEL,
+        "intervalMs": VISION_OBSERVER_INTERVAL_MS,
+        "maxContextChars": VISION_OBSERVER_MAX_CONTEXT_CHARS,
+        "maxImageBytes": VISION_OBSERVER_MAX_IMAGE_BYTES,
+        "localOnly": SMOLVLM_REQUIRE_LOCAL,
+    }
+
+
+@app.post("/api/vision-observer/analyze")
+async def vision_observer_analyze(req: VisionAnalyzeRequest):
+    error = _smolvlm_url_error()
+    if not VISION_OBSERVER_ENABLED:
+        raise HTTPException(status_code=503, detail="Visual observer is disabled. Set VISION_OBSERVER_ENABLED=1.")
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    image = (req.image or "").strip()
+    if not image.startswith("data:image/") or ";base64," not in image[:80]:
+        raise HTTPException(status_code=400, detail="Visual observer image must be a data:image/* base64 URL.")
+    if len(image.encode("utf-8")) > VISION_OBSERVER_MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Visual observer image is too large.")
+
+    instruction = (req.instruction or VISION_OBSERVER_PROMPT).strip() or VISION_OBSERVER_PROMPT
+    payload: dict[str, object] = {
+        "max_tokens": VISION_OBSERVER_MAX_TOKENS,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instruction},
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            }
+        ],
+    }
+    if SMOLVLM_MODEL:
+        payload["model"] = SMOLVLM_MODEL
+
+    try:
+        async with httpx.AsyncClient(timeout=VISION_OBSERVER_TIMEOUT_S) as http:
+            resp = await http.post(_smolvlm_chat_url(), json=payload)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"SmolVLM local server unreachable: {_safe_detail(exc)}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"SmolVLM returned HTTP {resp.status_code}: {resp.text[:300]}")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="SmolVLM returned non-JSON output.") from exc
+
+    observation = ""
+    if isinstance(data, dict):
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message")
+                if isinstance(message, dict):
+                    observation = str(message.get("content", "")).strip()
+                if not observation:
+                    observation = str(first.get("text", "")).strip()
+    if not observation:
+        raise HTTPException(status_code=502, detail="SmolVLM returned an empty observation.")
+    return {"observation": observation[:VISION_OBSERVER_MAX_CONTEXT_CHARS], "model": SMOLVLM_MODEL}
 
 
 @app.get("/api/qwen-omni/config")

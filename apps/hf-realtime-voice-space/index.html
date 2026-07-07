@@ -427,6 +427,27 @@
           </div>
           <small id="tool-cam-hint" class="tool-hint">A live preview shows bottom-left while the camera is on.</small>
 
+          <div class="tool-row tool-row-sep" id="tool-vision-row">
+            <div class="tool-info">
+              <span class="tool-name">Visual observer</span>
+              <span class="tool-desc">Keep a local SmolVLM scene summary in context.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-vision" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <label class="field tools-key" id="tool-vision-interval-field">
+            <span>Observer interval</span>
+            <select id="tool-vision-interval">
+              <option value="1000">1 second</option>
+              <option value="2000" selected>2 seconds</option>
+              <option value="5000">5 seconds</option>
+              <option value="10000">10 seconds</option>
+            </select>
+            <small id="tool-vision-hint" class="tool-hint">Disabled until the local SmolVLM observer is configured.</small>
+          </label>
+
           <div class="tool-row tool-row-sep" id="tool-mcp-row">
             <div class="tool-info">
               <span class="tool-name">Docker MCP / Playwright</span>

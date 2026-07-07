@@ -13,7 +13,7 @@ This repository contains both pieces needed for the local full stack:
 3. Set `LM_STUDIO_API_KEY` in `.env`. If Docker cannot reach LM Studio through `host.docker.internal`, set:
 
    ```env
-   LM_STUDIO_BASE_URL=http://192.168.0.115:1234/v1
+   LM_STUDIO_BASE_URL=http://<LAN_IP>:1234/v1
    ```
 
 4. Start the stack:
@@ -59,7 +59,8 @@ UI through the `lan-https` proxy profile and open the HTTPS URL.
 Generate a local certificate for your LAN IP:
 
 ```powershell
-$lanIp = "192.168.0.115"
+$net = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1
+$lanIp = $net.IPv4Address.IPAddress
 New-Item -ItemType Directory -Force .\.local-https\certs | Out-Null
 $certDir = (Resolve-Path .\.local-https\certs).Path -replace '\\','/'
 docker run --rm -v "${certDir}:/certs" alpine:latest sh -c "apk add --no-cache openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes -keyout /certs/hf-voice-ui.key -out /certs/hf-voice-ui.crt -subj '/CN=${lanIp}' -addext 'subjectAltName=IP:${lanIp},DNS:localhost'"
@@ -78,20 +79,46 @@ automatically rewrites the named presets:
 - `LM Studio (local)` -> `https://<host>:7862/s2s/v1/realtime`
 - `LM Studio + BG TTS (Ani)` -> `https://<host>:7862/s2s-bg/v1/realtime`
 
-In the common BG Ani LAN setup, only `backend-lmstudio-bgtts` may be running.
-The HTTPS proxy keeps `/s2s/v1/realtime` as a compatibility alias to that active
-backend, so saved browser settings from the default preset still open a working
-realtime socket. `/s2s-bg/v1/realtime` is the explicit BG Ani route and should
-be preferred for new settings.
+The HTTPS proxy keeps the routes separate: `/s2s/v1/realtime` reaches
+`backend-lmstudio`, and `/s2s-bg/v1/realtime` reaches
+`backend-lmstudio-bgtts`. If only the BG Ani profile is running, the default
+`LM Studio (local)` preset is shown offline instead of silently hitting the BG
+TTS backend.
 
 The old `http://localhost:8765` and `http://localhost:8766` preset URLs remain as
 aliases, so browsers with saved settings migrate to the LAN-safe preset URL
 instead of showing `Custom backend URL`.
 
+## Optional Visual Observer
+
+The visual observer is disabled by default and does not replace the modular
+STT/TTS/LLM speech stack. When enabled, it reuses the webcam preview, sends
+periodic JPEG frames to a local SmolVLM `llama-server`, keeps only a capped
+rolling summary, and injects that hidden summary into the active instructions.
+
+Start SmolVLM outside Docker:
+
+```powershell
+llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF --port 8080
+```
+
+Add `-ngl 99` if you want llama.cpp to offload layers to a supported GPU.
+Then set:
+
+```env
+VISION_OBSERVER_ENABLED=1
+SMOLVLM_BASE_URL=http://host.docker.internal:8080
+SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
+```
+
+The app calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
+`image_url` content. Keep `SMOLVLM_REQUIRE_LOCAL=1` unless you intentionally
+want to allow a non-local vision endpoint.
+
 If another computer cannot reach the proxy, allow the HTTPS port on the host:
 
 ```powershell
-New-NetFirewallRule -DisplayName "HF Voice HTTPS 7862 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7862 -RemoteAddress 192.168.0.0/24 -Profile Private,Public
+New-NetFirewallRule -DisplayName "HF Voice HTTPS 7862 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7862 -RemoteAddress <LAN_CIDR> -Profile Private,Public
 ```
 
 ## Runtime Provider Switching

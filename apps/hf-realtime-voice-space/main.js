@@ -14,8 +14,9 @@
  * it the MediaStream directly.
  *
  * @typedef {"idle" | "connecting" | "queued" | "your-turn" | "listening" | "user-speaking" | "processing" | "ai-speaking" | "error"} AppState
- * @typedef {{ id: string; label: string; url: string; aliases?: string[]; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} BackendPreset
+ * @typedef {{ id: string; label: string; url: string; aliases?: string[]; availability?: "available" | "offline" | "unknown"; availabilityDetail?: string; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} BackendPreset
  * @typedef {{ activeBackend?: string; backendLabel?: string; llmProvider?: string; llmModel?: string; stt?: string; tts?: string }} RuntimeStack
+ * @typedef {{ directUrl: string; backendPreset: string; llmProvider: string; llmModel: string; runtime: RuntimeStack }} ActiveSessionSnapshot
  * @typedef {{ id: string; label: string; selector: string; loaded?: boolean; source?: string; sizeBytes?: number; contextLength?: number; format?: string }} LlmModel
  * @typedef {{ id: string; label: string; configured: boolean; requiresKey: boolean; models: LlmModel[] }} LlmProvider
  */
@@ -104,6 +105,7 @@ const STORAGE_KEYS = {
   mcpDefaulted: "s2s.ws.mcpDefaulted.v2",
   speakReplies: "s2s.ws.speakReplies",
   tools: "s2s.ws.tools",
+  visionObserverIntervalMs: "s2s.ws.visionObserver.intervalMs",
   searchKey: "s2s.ws.searchKey",
   noiseGate: "s2s.ws.noiseGate",
 };
@@ -482,7 +484,7 @@ function saveSettings(s) {
   localStorage.setItem(STORAGE_KEYS.noiseGate, String(s.noiseGate));
 }
 
-/** @returns {{ web_search: boolean, camera_snapshot: boolean }} */
+/** @returns {{ web_search: boolean, camera_snapshot: boolean, visual_observer: boolean }} */
 function loadTools() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.tools) || "{}");
@@ -493,9 +495,10 @@ function loadTools() {
     return {
       web_search: raw.web_search ?? true,
       camera_snapshot: raw.camera_snapshot ?? true,
+      visual_observer: raw.visual_observer ?? false,
     };
   } catch {
-    return { web_search: true, camera_snapshot: true };
+    return { web_search: true, camera_snapshot: true, visual_observer: false };
   }
 }
 
@@ -576,15 +579,23 @@ const toolWebSwitch = $("#tool-web");
 /** @type {HTMLInputElement} */
 const toolCamSwitch = $("#tool-cam");
 /** @type {HTMLInputElement} */
+const toolVisionSwitch = $("#tool-vision");
+/** @type {HTMLSelectElement} */
+const toolVisionInterval = $("#tool-vision-interval");
+/** @type {HTMLInputElement} */
 const toolMcpSwitch = $("#tool-mcp");
 /** @type {HTMLElement} */
 const toolWebRow = $("#tool-web-row");
+/** @type {HTMLElement} */
+const toolVisionRow = $("#tool-vision-row");
 /** @type {HTMLElement} */
 const toolMcpRow = $("#tool-mcp-row");
 /** @type {HTMLElement} */
 const toolWebHint = $("#tool-web-hint");
 /** @type {HTMLElement} */
 const toolCamHint = $("#tool-cam-hint");
+/** @type {HTMLElement} */
+const toolVisionHint = $("#tool-vision-hint");
 /** @type {HTMLElement} */
 const toolMcpHint = $("#tool-mcp-hint");
 /** @type {HTMLInputElement} */
@@ -672,6 +683,8 @@ let allowDirect = true;
 let backendPresets = [];
 /** @type {RuntimeStack} */
 let runtimeStack = {};
+/** @type {ActiveSessionSnapshot | null} */
+let activeSession = null;
 /** @type {LlmProvider[]} */
 let llmProviders = [];
 /** @type {{ configured?: boolean; allowedTools?: string[]; servers?: any[] }} */
@@ -681,6 +694,21 @@ let providerModelRefresh = { providerId: "", loading: false, loaded: false, erro
 
 // ── Tool state ──────────────────────────────────────────────────────────────
 let toolsEnabled = loadTools();
+let visionConfig = {
+  enabled: false,
+  configured: false,
+  status: "disabled",
+  message: "Visual observer is disabled.",
+  intervalMs: 2000,
+  maxContextChars: 1200,
+  maxImageBytes: 1500000,
+};
+let visionObserverTimer = 0;
+let visionObserverInFlight = false;
+let visionObserverFailures = 0;
+let visionObserverLastAt = 0;
+/** @type {string[]} */
+let visionObservations = [];
 // Whether the server holds a search provider key (learned from /api/config on load).
 let serverSearchKey = false;
 let serverSearchProvider = "";
@@ -737,14 +765,25 @@ function isDirectMcpTool(name) {
   return mcpGatewayHealthy() && Object.hasOwn(DIRECT_MCP_TOOL_DEFS, name) && allowedMcpToolNames().has(name);
 }
 
+function visualObserverContext() {
+  if (!visionObservations.length) return "";
+  const maxChars = Math.max(200, Number(visionConfig.maxContextChars) || 1200);
+  const joined = visionObservations.slice(-4).join("\n");
+  const clipped = joined.length > maxChars ? joined.slice(-maxChars) : joined;
+  return `\n\nCurrent visual context from the local observer. Treat it as uncertain machine observation, not user truth:\n${clipped}`;
+}
+
 /** Instructions plus the hidden tool-use hint when any tool is active. */
 function effectiveInstructions() {
-  const preset = presetForUrl(settings.directUrl);
+  const preset = activeSession && LIVE_STATES.has(currentState)
+    ? presetForId(activeSession.backendPreset)
+    : presetForUrl(settings.directUrl);
   const base = settings.instructions + (preset?.id === "lmstudio-bgtts" ? BG_TTS_HINT : "");
   const defs = activeToolDefs();
-  if (!defs.length) return base;
+  const withVisualContext = base + visualObserverContext();
+  if (!defs.length) return withVisualContext;
   const mcpActive = defs.some((tool) => tool.name === "mcp_call");
-  return base + TOOL_USE_HINT + (mcpActive ? MCP_USE_HINT : "");
+  return withVisualContext + TOOL_USE_HINT + (mcpActive ? MCP_USE_HINT : "");
 }
 
 /** Push the active tool set to a live session so toggles apply mid-call. */
@@ -810,6 +849,7 @@ let lastTypedSpeakReplies = true;
 /** @param {AppState} next */
 function setState(next) {
   currentState = next;
+  syncChatRuntime();
   const view = STATE_VIEWS[next];
   circleBtn.disabled = view.disabled;
   circleBtn.className = `circle ${STATE_CLASS[next]}`;
@@ -859,12 +899,18 @@ function updateRestartAvailability() {
   // Restart works from any settled state — it tears down a live call (if any)
   // and reconnects with the current settings. Only block while mid-connect or
   // while waiting in the queue (restarting from there would just re-queue).
-  restartBtn.disabled =
-    currentState === "connecting" || currentState === "queued" || currentState === "your-turn";
+  const blocked = currentState === "connecting" || currentState === "queued" || currentState === "your-turn";
+  const live = LIVE_STATES.has(currentState);
+  const changed = hasRestartRequiredChanges();
+  restartBtn.disabled = blocked || (live && !changed);
   restartHint.hidden = false;
-  restartHint.textContent = LIVE_STATES.has(currentState)
-    ? "Reconnects now with the settings above."
-    : "Starts a conversation with the settings above.";
+  restartHint.textContent = blocked
+    ? "Wait for the current connection step to finish."
+    : live
+      ? changed
+        ? "Pending backend/provider/model changes apply after restart."
+        : "Backend/provider/model already match this live session."
+      : "Starts a conversation with the settings above.";
 }
 
 /**
@@ -1031,15 +1077,102 @@ aboutModal.addEventListener("click", (e) => {
 
 // ── Tools panel ───────────────────────────────────────────────────────────
 
+function currentVisionIntervalMs() {
+  const selected = Number(toolVisionInterval?.value);
+  const stored = Number(localStorage.getItem(STORAGE_KEYS.visionObserverIntervalMs));
+  const configured = Number(visionConfig.intervalMs) || 2000;
+  const value = Number.isFinite(selected) && selected > 0 ? selected : Number.isFinite(stored) && stored > 0 ? stored : configured;
+  return Math.min(30000, Math.max(500, Math.round(value)));
+}
+
+function stopVisionObserver() {
+  if (visionObserverTimer) {
+    clearInterval(visionObserverTimer);
+    visionObserverTimer = 0;
+  }
+  visionObserverInFlight = false;
+}
+
+function maybeStartVisionObserver() {
+  stopVisionObserver();
+  if (!toolsEnabled.visual_observer || !toolsEnabled.camera_snapshot || !visionConfig.enabled || !visionConfig.configured) {
+    syncToolsUi();
+    return;
+  }
+  void autoStartCamera();
+  const intervalMs = currentVisionIntervalMs();
+  visionObserverTimer = window.setInterval(() => {
+    void runVisionObserverTick();
+  }, intervalMs);
+  void runVisionObserverTick();
+  syncToolsUi();
+}
+
+function rememberVisionObservation(text) {
+  const clean = cleanString(text).replace(/\s+/g, " ");
+  if (!clean) return;
+  const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  visionObservations.push(`[${stamp}] ${clean}`);
+  const maxChars = Math.max(200, Number(visionConfig.maxContextChars) || 1200);
+  while (visionObservations.join("\n").length > maxChars && visionObservations.length > 1) {
+    visionObservations.shift();
+  }
+  visionObserverLastAt = Date.now();
+  if (client && LIVE_STATES.has(currentState)) {
+    client.updateSession({ instructions: effectiveInstructions() });
+  }
+  syncToolsUi();
+}
+
+async function runVisionObserverTick() {
+  if (visionObserverInFlight || document.hidden) return;
+  if (!toolsEnabled.visual_observer || !visionConfig.enabled || !visionConfig.configured) return;
+  const image = captureSnapshot();
+  if (!image) {
+    toolVisionHint.textContent = "Waiting for the camera frame before observing.";
+    return;
+  }
+  visionObserverInFlight = true;
+  try {
+    const res = await fetch("api/vision-observer/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.detail || `observer error (${res.status})`);
+    visionObserverFailures = 0;
+    rememberVisionObservation(cleanString(json.observation));
+  } catch (err) {
+    visionObserverFailures += 1;
+    const message = err instanceof Error ? err.message : String(err);
+    toolVisionHint.textContent = `Observer offline: ${message}`;
+    if (visionObserverFailures >= 3) {
+      toolsEnabled.visual_observer = false;
+      saveTools();
+      stopVisionObserver();
+      syncToolsUi();
+    }
+  } finally {
+    visionObserverInFlight = false;
+  }
+}
+
 /** Reflect the current tool state into the panel controls. */
 function syncToolsUi() {
   const avail = searchAvailable();
   const mcpAvail = mcpConfigured();
   const mcpReady = mcpGatewayHealthy();
+  const visionAvail = !!visionConfig.enabled && !!visionConfig.configured;
   toolWebSwitch.checked = toolsEnabled.web_search && avail;
   toolWebSwitch.disabled = !avail;
   toolWebRow.classList.toggle("disabled", !avail);
   toolCamSwitch.checked = toolsEnabled.camera_snapshot;
+  toolVisionSwitch.checked = toolsEnabled.visual_observer && visionAvail;
+  toolVisionSwitch.disabled = !visionAvail || !toolsEnabled.camera_snapshot;
+  toolVisionRow.classList.toggle("disabled", !visionAvail || !toolsEnabled.camera_snapshot);
+  toolVisionInterval.value = String(currentVisionIntervalMs());
+  toolVisionInterval.disabled = !visionAvail;
   toolMcpSwitch.checked = settings.mcpEnabled && mcpAvail;
   toolMcpSwitch.disabled = !mcpAvail;
   toolMcpRow.classList.toggle("disabled", !mcpAvail);
@@ -1071,6 +1204,19 @@ function syncToolsUi() {
     toolMcpHint.textContent = `Gateway configured but offline. ${detail}`;
   } else {
     toolMcpHint.textContent = "Not configured. Start the Docker MCP gateway and set MCP_GATEWAY_URL in .env.";
+  }
+
+  if (!visionAvail) {
+    toolVisionHint.textContent = cleanString(visionConfig.message) || "Set VISION_OBSERVER_ENABLED=1 and run local SmolVLM.";
+  } else if (!toolsEnabled.camera_snapshot) {
+    toolVisionHint.textContent = "Turn on Camera first. The observer reuses the same local webcam preview.";
+  } else if (toolsEnabled.visual_observer) {
+    const age = visionObserverLastAt ? `${Math.max(0, Math.round((Date.now() - visionObserverLastAt) / 1000))}s ago` : "not yet";
+    toolVisionHint.textContent = visionObservations.length
+      ? `Observing locally. Last update ${age}: ${visionObservations[visionObservations.length - 1]}`
+      : "Observing locally. Waiting for the first frame summary.";
+  } else {
+    toolVisionHint.textContent = "Ready. Sends webcam frames to the local SmolVLM server only when enabled.";
   }
 }
 
@@ -1108,12 +1254,34 @@ toolCamSwitch.addEventListener("change", async () => {
     toolsEnabled.camera_snapshot = true;
     toolCamHint.textContent = "Camera on. The assistant can take a snapshot when it needs to see.";
   } else {
+    stopVisionObserver();
     disableCamera();
     toolsEnabled.camera_snapshot = false;
+    toolsEnabled.visual_observer = false;
     toolCamHint.textContent = "Let the assistant see through your webcam.";
   }
   saveTools();
+  maybeStartVisionObserver();
   pushToolsToSession();
+});
+
+toolVisionSwitch.addEventListener("change", () => {
+  if (toolVisionSwitch.checked && (!visionConfig.enabled || !visionConfig.configured || !toolsEnabled.camera_snapshot)) {
+    toolVisionSwitch.checked = false;
+    syncToolsUi();
+    return;
+  }
+  toolsEnabled.visual_observer = toolVisionSwitch.checked;
+  saveTools();
+  maybeStartVisionObserver();
+  if (client && LIVE_STATES.has(currentState)) {
+    client.updateSession({ instructions: effectiveInstructions() });
+  }
+});
+
+toolVisionInterval.addEventListener("change", () => {
+  localStorage.setItem(STORAGE_KEYS.visionObserverIntervalMs, String(currentVisionIntervalMs()));
+  maybeStartVisionObserver();
 });
 
 function setMcpEnabled(enabled) {
@@ -1469,6 +1637,7 @@ async function fetchConfig() {
       runtimeStack = normaliseRuntimeStack(json.runtime);
       llmProviders = Array.isArray(json.llmProviders) ? json.llmProviders.map(normaliseLlmProvider).filter(Boolean) : [];
       mcpConfig = json.mcp && typeof json.mcp === "object" ? json.mcp : {};
+      await fetchVisionObserverConfig();
       applyMcpDefaultIfNeeded();
       const directUrl = typeof json.directUrl === "string" ? json.directUrl.trim() : "";
       const hadStoredBackendPreset = !!localStorage.getItem(STORAGE_KEYS.backendPreset);
@@ -1518,6 +1687,10 @@ function connectionTarget() {
   if (!directUrl) {
     throw new Error("Enter a speech-to-speech server URL in Settings.");
   }
+  const preset = knownPresetForUrl(settings.directUrl);
+  if (preset?.availability === "offline") {
+    throw new Error(`${preset.label} is offline. Start that Docker profile or choose an available speech backend.`);
+  }
   return { directUrl };
 }
 
@@ -1548,6 +1721,84 @@ function buildDirectWsUrl(raw) {
   }
 }
 
+async function fetchVisionObserverConfig() {
+  try {
+    const res = await fetch("api/vision-observer/config");
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.detail || `observer config error (${res.status})`);
+    visionConfig = {
+      enabled: !!json.enabled,
+      configured: !!json.configured,
+      status: cleanString(json.status) || "unknown",
+      message: cleanString(json.message),
+      intervalMs: Number(json.intervalMs) || 2000,
+      maxContextChars: Number(json.maxContextChars) || 1200,
+      maxImageBytes: Number(json.maxImageBytes) || 1500000,
+    };
+  } catch (err) {
+    visionConfig = {
+      ...visionConfig,
+      enabled: false,
+      configured: false,
+      status: "offline",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (!visionConfig.enabled || !visionConfig.configured) {
+    toolsEnabled.visual_observer = false;
+    saveTools();
+    stopVisionObserver();
+  }
+  syncToolsUi();
+  if (toolsEnabled.visual_observer) maybeStartVisionObserver();
+}
+
+/** @param {string} raw @returns {URL | null} */
+function parseDirectWsUrl(raw) {
+  const normalized = buildDirectWsUrl(raw);
+  if (!normalized) return null;
+  try {
+    return new URL(normalized);
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} hostname @returns {boolean} */
+function isLocalishHostname(hostname) {
+  const host = (hostname || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "host.docker.internal" || host === "::1" || host.endsWith(".local")) return true;
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) return true;
+  const match = host.match(/^172\.(\d{1,3})\./);
+  return !!match && Number(match[1]) >= 16 && Number(match[1]) <= 31;
+}
+
+/** @param {string} pathname @returns {boolean} */
+function isSameOriginProxyPath(pathname) {
+  return /^\/s2s(?:-bg)?\/v1\/realtime\/?$/i.test(pathname || "");
+}
+
+/**
+ * Same-origin proxy URLs are generated from the current browser host. When the
+ * LAN IP changes, an old saved URL should still match the same preset by route.
+ * @param {string} candidateRaw
+ * @param {string} targetRaw
+ * @returns {boolean}
+ */
+function sameOriginProxyRouteMatches(candidateRaw, targetRaw) {
+  const candidate = parseDirectWsUrl(candidateRaw);
+  const target = parseDirectWsUrl(targetRaw);
+  if (!candidate || !target) return false;
+  if (!isSameOriginProxyPath(candidate.pathname) || !isSameOriginProxyPath(target.pathname)) return false;
+  return (
+    candidate.pathname.replace(/\/$/, "") === target.pathname.replace(/\/$/, "") &&
+    candidate.search === target.search &&
+    isLocalishHostname(candidate.hostname) &&
+    isLocalishHostname(target.hostname)
+  );
+}
+
 /** @param {unknown} value @returns {string} */
 function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -1560,12 +1811,15 @@ function normaliseBackendPreset(item) {
   const label = cleanString(raw.label);
   const url = cleanString(raw.url);
   const aliases = Array.isArray(raw.aliases) ? raw.aliases.map(cleanString).filter(Boolean) : [];
+  const availability = cleanString(raw.availability);
   if (!label) return null;
   return {
     id: cleanString(raw.id) || label.toLowerCase().replace(/\s+/g, "-"),
     label,
     url,
     aliases,
+    availability: availability === "available" || availability === "offline" ? availability : "unknown",
+    availabilityDetail: cleanString(raw.availabilityDetail),
     llmProvider: cleanString(raw.llmProvider),
     llmModel: cleanString(raw.llmModel),
     stt: cleanString(raw.stt),
@@ -1641,6 +1895,65 @@ function selectedModelSelector() {
   const provider = providerById(settings.llmProvider);
   const model = provider?.models.find((item) => item.id === settings.llmModel);
   return model?.selector || "";
+}
+
+/** @param {ReturnType<typeof loadSettings>} s @returns {RuntimeStack} */
+function runtimeForSettings(s) {
+  const preset = presetForUrl(s.directUrl);
+  const provider = providerById(s.llmProvider);
+  const model = provider?.models.find((item) => item.id === s.llmModel);
+  return {
+    activeBackend: preset?.id || runtimeStack.activeBackend || "",
+    backendLabel: preset?.label || runtimeStack.backendLabel || "",
+    llmProvider: provider?.label || preset?.llmProvider || runtimeStack.llmProvider || "",
+    llmModel: model?.label || preset?.llmModel || runtimeStack.llmModel || "",
+    stt: preset?.stt || runtimeStack.stt || "",
+    tts: preset?.tts || runtimeStack.tts || "",
+  };
+}
+
+/** @param {ReturnType<typeof loadSettings>} s */
+function restartSnapshotForSettings(s) {
+  const preset = presetForUrl(s.directUrl);
+  return {
+    directUrl: buildDirectWsUrl(s.directUrl),
+    backendPreset: preset?.id || s.backendPreset || "",
+    llmProvider: s.llmProvider || "",
+    llmModel: s.llmModel || "",
+  };
+}
+
+function pendingRestartSnapshot() {
+  return restartSnapshotForSettings(settings);
+}
+
+function hasRestartRequiredChanges() {
+  if (!client || !activeSession || !LIVE_STATES.has(currentState)) return false;
+  const pending = pendingRestartSnapshot();
+  return (
+    pending.directUrl !== activeSession.directUrl ||
+    pending.backendPreset !== activeSession.backendPreset ||
+    pending.llmProvider !== activeSession.llmProvider ||
+    pending.llmModel !== activeSession.llmModel
+  );
+}
+
+function captureActiveSessionSnapshot() {
+  const pending = pendingRestartSnapshot();
+  activeSession = {
+    ...pending,
+    runtime: runtimeForSettings(settings),
+  };
+  syncChatRuntime();
+  updateRestartAvailability();
+}
+
+function syncChatRuntime() {
+  if (activeSession && LIVE_STATES.has(currentState)) {
+    chat.setRuntime(activeSession.runtime);
+  } else {
+    chat.setRuntime(runtimeForSettings(settings));
+  }
 }
 
 /** @param {BackendPreset} preset */
@@ -1812,15 +2125,17 @@ function presetCandidateUrls(preset) {
 
 /** @param {BackendPreset} preset @param {string} target @returns {boolean} */
 function presetMatchesTarget(preset, target) {
-  return presetCandidateUrls(preset).some((url) => buildDirectWsUrl(url) === target);
+  return presetCandidateUrls(preset).some((url) => {
+    const candidate = buildDirectWsUrl(url);
+    return candidate === target || sameOriginProxyRouteMatches(candidate, target);
+  });
 }
 
 /** @param {string} [url] @returns {BackendPreset | undefined} */
 function presetForUrl(url = settings.directUrl) {
   const target = buildDirectWsUrl(url);
   if (target) {
-    const match = backendPresets.find((preset) => presetMatchesTarget(preset, target));
-    return match || backendPresets.find((preset) => preset.id === "custom");
+    return knownPresetForUrl(url) || backendPresets.find((preset) => preset.id === "custom");
   }
   const active = runtimeStack.activeBackend || "";
   return backendPresets.find((preset) => preset.id === active) || backendPresets[0];
@@ -1830,18 +2145,25 @@ function presetForId(id) {
   return backendPresets.find((preset) => preset.id === id);
 }
 
-function isKnownNonCustomPresetUrl(url) {
+/** @param {string} url @returns {BackendPreset | undefined} */
+function knownPresetForUrl(url) {
   const target = buildDirectWsUrl(url);
-  return !!target && backendPresets.some((preset) => preset.id !== "custom" && presetMatchesTarget(preset, target));
+  if (!target) return undefined;
+  return backendPresets.find((preset) => preset.id !== "custom" && presetMatchesTarget(preset, target));
+}
+
+function isKnownNonCustomPresetUrl(url) {
+  return !!knownPresetForUrl(url);
 }
 
 function applyBackendPresetFromConfig(directUrl, hadStoredBackendPreset) {
   const activePreset = presetForId(runtimeStack.activeBackend || "");
   const storedPreset = presetForId(settings.backendPreset || "");
-  const currentUrlIsPreset = settings.directUrl ? isKnownNonCustomPresetUrl(settings.directUrl) : false;
+  if (storedPreset?.id === "custom") return;
 
-  let chosen = storedPreset;
-  if (!chosen && !hadStoredBackendPreset && activePreset && (!settings.directUrl || currentUrlIsPreset)) {
+  const currentPreset = settings.directUrl ? knownPresetForUrl(settings.directUrl) : undefined;
+  let chosen = storedPreset || currentPreset;
+  if (!chosen && !hadStoredBackendPreset && activePreset && (!settings.directUrl || currentPreset)) {
     chosen = activePreset;
   }
   if (!chosen && !settings.directUrl && directUrl) {
@@ -1871,21 +2193,30 @@ function migratePresetAliasUrl() {
 
 /** @param {BackendPreset | undefined} preset */
 function renderRuntimeStack(preset) {
-  const selectedProvider = providerById(settings.llmProvider);
-  const selectedModel = selectedProvider?.models.find((item) => item.id === settings.llmModel);
-  const provider = selectedProvider?.label || preset?.llmProvider || runtimeStack.llmProvider || "";
-  const model = selectedModel?.label || preset?.llmModel || runtimeStack.llmModel || "";
-  const stt = preset?.stt || runtimeStack.stt || "";
-  const tts = preset?.tts || runtimeStack.tts || "";
+  const pendingRuntime = runtimeForSettings(settings);
+  const activeRuntime = activeSession && LIVE_STATES.has(currentState) ? activeSession.runtime : null;
+  const pending = hasRestartRequiredChanges();
+  const provider = pendingRuntime.llmProvider || "";
+  const model = pendingRuntime.llmModel || "";
+  const stt = pendingRuntime.stt || "";
+  const tts = pendingRuntime.tts || "";
   const hasRuntime = !!(provider || model || stt || tts);
-  chat.setRuntime({ llmProvider: provider, llmModel: model, stt, tts, activeBackend: preset?.id || runtimeStack.activeBackend });
+  syncChatRuntime();
 
   runtimeStackEl.hidden = !allowDirect || !hasRuntime;
   if (!hasRuntime) return;
 
-  runtimeLlm.textContent = [provider, model].filter(Boolean).join(" - ") || "Unknown";
-  runtimeStt.textContent = stt || "Unknown";
-  runtimeTts.textContent = tts || "Unknown";
+  const llm = [provider, model].filter(Boolean).join(" - ") || "Unknown";
+  if (pending && activeRuntime) {
+    const activeLlm = [activeRuntime.llmProvider, activeRuntime.llmModel].filter(Boolean).join(" - ") || "Unknown";
+    runtimeLlm.textContent = `${activeLlm} (pending: ${llm})`;
+    runtimeStt.textContent = `${activeRuntime.stt || "Unknown"} (pending: ${stt || "Unknown"})`;
+    runtimeTts.textContent = `${activeRuntime.tts || "Unknown"} (pending: ${tts || "Unknown"})`;
+  } else {
+    runtimeLlm.textContent = llm;
+    runtimeStt.textContent = stt || "Unknown";
+    runtimeTts.textContent = tts || "Unknown";
+  }
 }
 
 /** @param {string} [url] */
@@ -1901,7 +2232,11 @@ function syncBackendPresetUi(url = settings.directUrl) {
   for (const preset of backendPresets) {
     const option = document.createElement("option");
     option.value = preset.id;
-    option.textContent = preset.label;
+    const status = preset.id !== "custom" && preset.availability && preset.availability !== "available"
+      ? ` (${preset.availability})`
+      : "";
+    option.textContent = `${preset.label}${status}`;
+    option.disabled = preset.availability === "offline";
     backendPresetSelect.append(option);
   }
 
@@ -1909,10 +2244,16 @@ function syncBackendPresetUi(url = settings.directUrl) {
   if (preset) backendPresetSelect.value = preset.id;
   renderRuntimeStack(preset);
 
-  backendPresetHint.textContent =
-    preset && preset.id !== "custom" && preset.url
-      ? `Endpoint: ${preset.url}`
-      : "Use the backend URL below.";
+  const pending = hasRestartRequiredChanges();
+  if (preset?.availability === "offline") {
+    backendPresetHint.textContent = `${preset.label} is offline. ${preset.availabilityDetail || "Start its Docker profile, then refresh."}`;
+  } else if (preset && preset.id !== "custom" && preset.url) {
+    backendPresetHint.textContent = pending && activeSession
+      ? `Pending endpoint: ${preset.url}. Active until restart: ${activeSession.directUrl}`
+      : `Endpoint: ${preset.url}`;
+  } else {
+    backendPresetHint.textContent = "Use the backend URL below.";
+  }
 }
 
 /** Create + resume an AudioContext synchronously (must run inside the user
@@ -1932,10 +2273,12 @@ function createResumedAudioContext() {
 /** Read the editable settings out of the form. The URL field is only honoured
  *  in direct mode (in LB mode it's locked and server-owned). */
 function readSettingsFromForm() {
-  const preset = presetForUrl(inputLbUrl.value.trim());
+  const formDirectUrl = inputLbUrl.value.trim();
+  const preset = presetForUrl(formDirectUrl);
+  const backendPreset = preset?.id || (allowDirect && buildDirectWsUrl(formDirectUrl) ? "custom" : settings.backendPreset);
   return {
-    directUrl: allowDirect ? inputLbUrl.value.trim() : settings.directUrl,
-    backendPreset: preset?.id || settings.backendPreset,
+    directUrl: allowDirect ? formDirectUrl : settings.directUrl,
+    backendPreset,
     voice: inputVoice.value || DEFAULT_VOICE,
     llmProvider: llmProviderSelect.value || settings.llmProvider,
     llmModel: llmModelSelect.value || settings.llmModel,
@@ -2001,6 +2344,8 @@ settingsForm.addEventListener("submit", (event) => {
     client.updateSession({ voice: settings.voice, instructions: effectiveInstructions() });
     pushToolsToSession();
   }
+  syncBackendPresetUi(settings.directUrl);
+  updateRestartAvailability();
 });
 
 backendPresetSelect.addEventListener("change", () => {
@@ -2025,6 +2370,7 @@ llmProviderSelect.addEventListener("change", () => {
   settings = { ...settings, llmProvider: provider.id, llmModel: provider.models[0]?.id || "" };
   saveSettings(settings);
   syncLlmUi();
+  syncBackendPresetUi(inputLbUrl.value);
   void refreshProviderModels(provider.id);
   updateRestartAvailability();
 });
@@ -2033,6 +2379,7 @@ llmModelSelect.addEventListener("change", () => {
   settings = { ...settings, llmModel: llmModelSelect.value };
   saveSettings(settings);
   syncLlmUi();
+  syncBackendPresetUi(inputLbUrl.value);
   updateRestartAvailability();
 });
 
@@ -2347,6 +2694,7 @@ async function ensureTextSession() {
     if (audioContext) void audioContext.close().catch(() => {});
     throw err;
   }
+  captureActiveSessionSnapshot();
   return c;
 }
 
@@ -2525,6 +2873,7 @@ async function doStart(audioContext = null) {
     if (audioContext) void audioContext.close().catch(() => {});
     throw err;
   }
+  captureActiveSessionSnapshot();
 }
 
 // ── Conversation-time heartbeat ─────────────────────────────────────────────
@@ -2662,6 +3011,7 @@ async function teardown() {
     }
     client = null;
   }
+  activeSession = null;
   if (micStream) {
     for (const track of micStream.getTracks()) track.stop();
     micStream = null;

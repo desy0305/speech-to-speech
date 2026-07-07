@@ -84,7 +84,8 @@ network.
 Generate a local self-signed certificate:
 
 ```powershell
-$lanIp = "192.168.0.115"
+$net = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1
+$lanIp = $net.IPv4Address.IPAddress
 New-Item -ItemType Directory -Force .\.local-https\certs | Out-Null
 $certDir = (Resolve-Path .\.local-https\certs).Path -replace '\\','/'
 docker run --rm -v "${certDir}:/certs" alpine:latest sh -c "apk add --no-cache openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes -keyout /certs/hf-voice-ui.key -out /certs/hf-voice-ui.crt -subj '/CN=${lanIp}' -addext 'subjectAltName=IP:${lanIp},DNS:localhost'"
@@ -99,7 +100,7 @@ docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-an
 Open:
 
 ```text
-https://192.168.0.115:7862/
+https://<LAN_IP>:7862/
 ```
 
 Accept or trust the self-signed certificate on the client machine. For an
@@ -107,10 +108,35 @@ internet-facing server, replace this with a real certificate and a normal
 reverse proxy.
 
 The LAN proxy exposes both realtime paths through the same HTTPS origin:
-`/s2s/v1/realtime` and `/s2s-bg/v1/realtime`. In a BG Ani-only local run,
-`/s2s/v1/realtime` is kept as a compatibility alias to
-`backend-lmstudio-bgtts` so saved browser settings do not point at a dead
-Docker service.
+`/s2s/v1/realtime` and `/s2s-bg/v1/realtime`. These are deliberately separate:
+`/s2s/v1/realtime` reaches `backend-lmstudio`, while `/s2s-bg/v1/realtime`
+reaches `backend-lmstudio-bgtts`. If only one backend is running, the UI marks
+the other preset offline instead of proxying it to the wrong stack.
+
+## Optional Visual Observer
+
+The visual observer is off by default. It is a local-only helper that sends
+periodic webcam frames to a separate SmolVLM `llama-server` and injects a capped
+rolling visual summary into the main assistant instructions. It does not change
+STT, TTS, or the selected LLM provider.
+
+Start the vision model outside compose:
+
+```powershell
+llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF --port 8080
+```
+
+Then enable the observer in `.env`:
+
+```env
+VISION_OBSERVER_ENABLED=1
+SMOLVLM_BASE_URL=http://host.docker.internal:8080
+SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
+SMOLVLM_REQUIRE_LOCAL=1
+```
+
+The UI server calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
+`image_url` content, matching llama.cpp's OpenAI-compatible multimodal route.
 
 ## Memory And MCP
 

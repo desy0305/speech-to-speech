@@ -69,6 +69,12 @@ services:
       QWEN_OMNI_MODEL: ${QWEN_OMNI_MODEL:-ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF}
       QWEN_OMNI_API_KEY: ${QWEN_OMNI_API_KEY:-}
       QWEN_OMNI_REQUIRE_LOCAL: ${QWEN_OMNI_REQUIRE_LOCAL:-1}
+      VISION_OBSERVER_ENABLED: ${VISION_OBSERVER_ENABLED:-0}
+      SMOLVLM_BASE_URL: ${SMOLVLM_BASE_URL:-http://host.docker.internal:8080}
+      SMOLVLM_MODEL: ${SMOLVLM_MODEL:-ggml-org/SmolVLM-500M-Instruct-GGUF}
+      SMOLVLM_REQUIRE_LOCAL: ${SMOLVLM_REQUIRE_LOCAL:-1}
+      VISION_OBSERVER_INTERVAL_MS: ${VISION_OBSERVER_INTERVAL_MS:-2000}
+      VISION_OBSERVER_MAX_CONTEXT_CHARS: ${VISION_OBSERVER_MAX_CONTEXT_CHARS:-1200}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
       HF_TOKEN: ${HF_TOKEN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -89,7 +95,8 @@ services:
             "llmProvider": "LM Studio",
             "llmModel": "${LM_STUDIO_MODEL:-google/gemma-4-12b-qat}",
             "stt": "nvidia/parakeet-tdt-0.6b-v3",
-            "tts": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+            "tts": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            "healthUrl": "http://backend-lmstudio:8765/v1/pool"
           },
           {
             "id": "lmstudio-bgtts",
@@ -98,7 +105,8 @@ services:
             "llmProvider": "LM Studio",
             "llmModel": "${LM_STUDIO_MODEL:-google/gemma-4-12b-qat}",
             "stt": "nvidia/parakeet-tdt-0.6b-v3",
-            "tts": "Ani Voice API (Bulgarian)"
+            "tts": "Ani Voice API (Bulgarian)",
+            "healthUrl": "http://backend-lmstudio-bgtts:8765/v1/pool"
           },
           {
             "id": "custom",

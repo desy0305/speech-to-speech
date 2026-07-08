@@ -19,6 +19,7 @@
  * @typedef {{ directUrl: string; backendPreset: string; llmProvider: string; llmModel: string; runtime: RuntimeStack }} ActiveSessionSnapshot
  * @typedef {{ id: string; label: string; selector: string; loaded?: boolean; source?: string; sizeBytes?: number; contextLength?: number; format?: string }} LlmModel
  * @typedef {{ id: string; label: string; configured: boolean; requiresKey: boolean; models: LlmModel[] }} LlmProvider
+ * @typedef {"idle" | "disabled" | "offline" | "waiting-camera" | "waiting-frame" | "reading" | "live" | "error"} VisionObserverState
  */
 
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js?v=chat-composer-20260706";
@@ -604,6 +605,14 @@ const searchKeyInput = $("#search-key");
 const camPip = $("#cam-pip");
 /** @type {HTMLVideoElement} */
 const camVideo = $("#cam-video");
+/** @type {HTMLElement} */
+const visionPip = $("#vision-pip");
+/** @type {HTMLElement} */
+const visionPipStatus = $("#vision-pip-status");
+/** @type {HTMLElement} */
+const visionPipText = $("#vision-pip-text");
+/** @type {HTMLElement} */
+const visionPipMeta = $("#vision-pip-meta");
 
 /** @type {HTMLInputElement} */
 const inputLbUrl = $("#lb-url");
@@ -708,6 +717,9 @@ let visionObserverTimer = 0;
 let visionObserverInFlight = false;
 let visionObserverFailures = 0;
 let visionObserverLastAt = 0;
+/** @type {VisionObserverState} */
+let visionObserverState = "idle";
+let visionObserverLastError = "";
 /** @type {string[]} */
 let visionObservations = [];
 // Whether the server holds a search provider key (learned from /api/config on load).
@@ -1086,12 +1098,78 @@ function currentVisionIntervalMs() {
   return Math.min(30000, Math.max(500, Math.round(value)));
 }
 
+function latestVisionObservation() {
+  const latest = visionObservations[visionObservations.length - 1] || "";
+  return latest.replace(/^\[[^\]]+\]\s*/, "");
+}
+
+function visionAgeLabel() {
+  if (!visionObserverLastAt) return "no observation yet";
+  const seconds = Math.max(0, Math.round((Date.now() - visionObserverLastAt) / 1000));
+  return `${seconds}s ago`;
+}
+
+function syncVisionPanel() {
+  const visionAvail = !!visionConfig.enabled && !!visionConfig.configured;
+  const hasContext = visionObservations.length > 0;
+  const shouldShow =
+    visionAvail &&
+    (toolsEnabled.visual_observer || hasContext || visionObserverState === "error" || visionObserverState === "offline");
+  visionPip.hidden = !shouldShow;
+  if (!shouldShow) return;
+
+  let status = visionObserverState;
+  if (!visionAvail) status = "disabled";
+  else if (visionConfig.healthy === false) status = "offline";
+  else if (!toolsEnabled.visual_observer && status !== "error") status = "idle";
+  else if (!toolsEnabled.camera_snapshot || !cameraStream) status = "waiting-camera";
+  else if (!status || status === "idle") status = hasContext ? "live" : "waiting-frame";
+
+  visionPip.className = `vision-pip ${status}`;
+  visionPipStatus.textContent = {
+    idle: "off",
+    disabled: "disabled",
+    offline: "offline",
+    "waiting-camera": "waiting",
+    "waiting-frame": "waiting",
+    reading: "reading",
+    live: "live",
+    error: "error",
+  }[status] || "idle";
+
+  const latest = latestVisionObservation();
+  if (latest) {
+    visionPipText.textContent = latest;
+  } else if (status === "error") {
+    visionPipText.textContent = visionObserverLastError || "SmolVLM observer request failed.";
+  } else if (status === "offline") {
+    visionPipText.textContent = cleanString(visionConfig.message) || "SmolVLM local server is offline.";
+  } else if (status === "reading") {
+    visionPipText.textContent = "Sending a webcam frame to SmolVLM.";
+  } else if (status === "waiting-camera") {
+    visionPipText.textContent = "Waiting for camera access before observing.";
+  } else if (status === "waiting-frame") {
+    visionPipText.textContent = "Waiting for the first camera frame.";
+  } else {
+    visionPipText.textContent = "Visual observer is ready.";
+  }
+
+  const entryLabel = visionObservations.length === 1 ? "entry" : "entries";
+  const injection = client && LIVE_STATES.has(currentState)
+    ? "injected into live LLM instructions"
+    : "kept for the next active LLM session";
+  visionPipMeta.textContent = hasContext
+    ? `${visionObservations.length} context ${entryLabel} - last update ${visionAgeLabel()} - ${injection}`
+    : "Local path: camera frame -> UI server -> SmolVLM.";
+}
+
 function stopVisionObserver() {
   if (visionObserverTimer) {
     clearInterval(visionObserverTimer);
     visionObserverTimer = 0;
   }
   visionObserverInFlight = false;
+  syncVisionPanel();
 }
 
 function maybeStartVisionObserver() {
@@ -1103,9 +1181,16 @@ function maybeStartVisionObserver() {
     !visionConfig.configured ||
     visionConfig.healthy === false
   ) {
+    if (!toolsEnabled.visual_observer) visionObserverState = "idle";
+    else if (!toolsEnabled.camera_snapshot) visionObserverState = "waiting-camera";
+    else if (!visionConfig.enabled || !visionConfig.configured) visionObserverState = "disabled";
+    else visionObserverState = "offline";
     syncToolsUi();
+    syncVisionPanel();
     return;
   }
+  visionObserverState = visionObservations.length ? "live" : "waiting-frame";
+  visionObserverLastError = "";
   void autoStartCamera();
   const intervalMs = currentVisionIntervalMs();
   visionObserverTimer = window.setInterval(() => {
@@ -1113,6 +1198,7 @@ function maybeStartVisionObserver() {
   }, intervalMs);
   void runVisionObserverTick();
   syncToolsUi();
+  syncVisionPanel();
 }
 
 function rememberVisionObservation(text) {
@@ -1125,10 +1211,13 @@ function rememberVisionObservation(text) {
     visionObservations.shift();
   }
   visionObserverLastAt = Date.now();
+  visionObserverState = "live";
+  visionObserverLastError = "";
   if (client && LIVE_STATES.has(currentState)) {
     client.updateSession({ instructions: effectiveInstructions() });
   }
   syncToolsUi();
+  syncVisionPanel();
 }
 
 async function runVisionObserverTick() {
@@ -1136,10 +1225,15 @@ async function runVisionObserverTick() {
   if (!toolsEnabled.visual_observer || !visionConfig.enabled || !visionConfig.configured || visionConfig.healthy === false) return;
   const image = captureSnapshot();
   if (!image) {
+    visionObserverState = cameraStream ? "waiting-frame" : "waiting-camera";
     toolVisionHint.textContent = "Waiting for the camera frame before observing.";
+    syncVisionPanel();
     return;
   }
   visionObserverInFlight = true;
+  visionObserverState = "reading";
+  visionObserverLastError = "";
+  syncVisionPanel();
   try {
     const res = await fetch("api/vision-observer/analyze", {
       method: "POST",
@@ -1153,6 +1247,8 @@ async function runVisionObserverTick() {
   } catch (err) {
     visionObserverFailures += 1;
     const message = err instanceof Error ? err.message : String(err);
+    visionObserverState = "error";
+    visionObserverLastError = message;
     toolVisionHint.textContent = `Observer offline: ${message}`;
     if (visionObserverFailures >= 3) {
       toolsEnabled.visual_observer = false;
@@ -1162,6 +1258,7 @@ async function runVisionObserverTick() {
     }
   } finally {
     visionObserverInFlight = false;
+    syncVisionPanel();
   }
 }
 
@@ -1232,6 +1329,7 @@ function syncToolsUi() {
   } else {
     toolVisionHint.textContent = "Ready. Sends webcam frames to the local SmolVLM server only when enabled.";
   }
+  syncVisionPanel();
 }
 
 toolsBtn.addEventListener("click", () => { syncToolsUi(); toolsModal.showModal(); });
@@ -1795,8 +1893,13 @@ async function fetchVisionObserverConfig() {
   }
   if (!visionConfig.enabled || !visionConfig.configured) {
     toolsEnabled.visual_observer = false;
+    visionObserverState = visionConfig.status === "disabled" ? "disabled" : "offline";
+    visionObserverLastError = cleanString(visionConfig.message);
     saveTools();
     stopVisionObserver();
+  } else if (visionConfig.healthy === false) {
+    visionObserverState = "offline";
+    visionObserverLastError = cleanString(visionConfig.message);
   }
   syncToolsUi();
   if (toolsEnabled.visual_observer) maybeStartVisionObserver();

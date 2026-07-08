@@ -2869,6 +2869,82 @@ body.cam-on .footer {
   12% { opacity: 0.85; }
   100% { opacity: 0; }
 }
+
+/* Live SmolVLM observer output. The camera preview shows the source frame;
+ * this panel shows the text that is actually injected as LLM context. */
+.vision-pip {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: min(380px, calc(100vw - 40px));
+  max-height: min(38vh, 280px);
+  overflow: hidden;
+  z-index: 91;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  box-shadow: var(--shadow-soft);
+  padding: 12px 14px;
+  color: var(--text);
+  backdrop-filter: blur(10px);
+}
+.vision-pip[hidden] {
+  display: none;
+}
+.vision-pip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.vision-pip-status {
+  flex: none;
+  color: var(--text);
+}
+.vision-pip-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.vision-pip-meta {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-faint);
+}
+.vision-pip.live,
+.vision-pip.reading {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+}
+.vision-pip.live .vision-pip-status {
+  color: var(--success);
+}
+.vision-pip.reading .vision-pip-status,
+.vision-pip.waiting-frame .vision-pip-status,
+.vision-pip.waiting-camera .vision-pip-status {
+  color: var(--processing);
+}
+.vision-pip.error,
+.vision-pip.offline {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+}
+.vision-pip.error .vision-pip-status,
+.vision-pip.offline .vision-pip-status {
+  color: var(--error);
+}
 @media (max-width: 600px) {
   /* Bottom-centred on phones. Auto margins centre it without touching the
    * transform, so the slide/scale-in animation still works. */
@@ -2878,6 +2954,13 @@ body.cam-on .footer {
     margin-inline: auto;
     bottom: 16px;
     width: min(188px, 52vw);
+  }
+  .vision-pip {
+    left: 12px;
+    right: 12px;
+    bottom: calc(28px + min(188px, 52vw) * 0.75);
+    width: auto;
+    max-height: 32vh;
   }
   /* The credit would sit under the centred preview, so drop it while the
    * camera is on. */

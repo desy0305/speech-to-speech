@@ -161,6 +161,14 @@
       <span class="cam-flash" aria-hidden="true"></span>
       <span class="cam-label">camera</span>
     </div>
+    <div id="vision-pip" class="vision-pip" hidden aria-live="polite">
+      <div class="vision-pip-head">
+        <span>Visual observer</span>
+        <span id="vision-pip-status" class="vision-pip-status">idle</span>
+      </div>
+      <p id="vision-pip-text" class="vision-pip-text">Waiting for SmolVLM.</p>
+      <span id="vision-pip-meta" class="vision-pip-meta">No visual context yet.</span>
+    </div>
 
     <!-- Conversation history panel (overlay) -->
     <div id="chat-panel" class="chat-panel">

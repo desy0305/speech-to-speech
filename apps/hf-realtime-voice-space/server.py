@@ -53,7 +53,8 @@ from pydantic import BaseModel
 import auth
 import limiter
 
-logger = logging.getLogger("s2s.search")
+logger = logging.getLogger("uvicorn.error")
+logger.setLevel(logging.INFO)
 
 
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -863,13 +864,16 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
         async with httpx.AsyncClient(timeout=VISION_OBSERVER_TIMEOUT_S) as http:
             resp = await http.post(_smolvlm_chat_url(), json=payload, headers=_smolvlm_auth_headers())
     except httpx.RequestError as exc:
+        logger.warning("vision observer upstream unreachable: %r", exc)
         raise HTTPException(
             status_code=502,
             detail=f"SmolVLM local server unreachable: {_safe_detail(exc) or exc.__class__.__name__}",
         ) from exc
     if resp.status_code in {401, 403}:
+        logger.warning("vision observer auth rejected with HTTP %s", resp.status_code)
         raise HTTPException(status_code=502, detail=f"SmolVLM rejected authentication with HTTP {resp.status_code}.")
     if resp.status_code >= 400:
+        logger.warning("vision observer upstream error HTTP %s: %s", resp.status_code, resp.text[:300])
         raise HTTPException(status_code=502, detail=f"SmolVLM returned HTTP {resp.status_code}: {resp.text[:300]}")
 
     try:
@@ -890,7 +894,15 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
                     observation = str(first.get("text", "")).strip()
     if not observation:
         raise HTTPException(status_code=502, detail="SmolVLM returned an empty observation.")
-    return {"observation": observation[:VISION_OBSERVER_MAX_CONTEXT_CHARS], "model": SMOLVLM_MODEL}
+    clipped = observation[:VISION_OBSERVER_MAX_CONTEXT_CHARS]
+    preview = " ".join(clipped.split())[:180]
+    logger.info(
+        "vision observer observation model=%s chars=%d preview=%r",
+        SMOLVLM_MODEL or "(default)",
+        len(clipped),
+        preview,
+    )
+    return {"observation": clipped, "model": SMOLVLM_MODEL}
 
 
 @app.get("/api/qwen-omni/config")

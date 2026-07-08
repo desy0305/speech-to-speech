@@ -180,6 +180,13 @@ VISION_OBSERVER_PROMPT = os.environ.get(
     "Mention only visible people, objects, text, actions, and changes. "
     "If uncertain, say so briefly.",
 ).strip()
+VISION_OBSERVER_LOG_PREVIEW = os.environ.get("VISION_OBSERVER_LOG_PREVIEW", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+}
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -895,13 +902,20 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
     if not observation:
         raise HTTPException(status_code=502, detail="SmolVLM returned an empty observation.")
     clipped = observation[:VISION_OBSERVER_MAX_CONTEXT_CHARS]
-    preview = " ".join(clipped.split())[:180]
-    logger.info(
-        "vision observer observation model=%s chars=%d preview=%r",
-        SMOLVLM_MODEL or "(default)",
-        len(clipped),
-        preview,
-    )
+    if VISION_OBSERVER_LOG_PREVIEW:
+        preview = " ".join(clipped.split())[:180]
+        logger.info(
+            "vision observer observation status=ok model=%s chars=%d preview=%r",
+            SMOLVLM_MODEL or "(default)",
+            len(clipped),
+            preview,
+        )
+    else:
+        logger.info(
+            "vision observer observation status=ok model=%s chars=%d",
+            SMOLVLM_MODEL or "(default)",
+            len(clipped),
+        )
     return {"observation": clipped, "model": SMOLVLM_MODEL}
 
 

@@ -2833,6 +2833,7 @@ body.cam-on .footer {
 .cam-pip.visible {
   opacity: 1;
   transform: none;
+  pointer-events: auto;
 }
 .cam-video {
   display: block;
@@ -2841,6 +2842,45 @@ body.cam-on .footer {
   object-fit: cover;
   transform: scaleX(-1); /* mirror the self-view only */
   background: var(--bg);
+  pointer-events: none;
+}
+.cam-off-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 24%, transparent);
+  border-radius: 50%;
+  background: rgba(10, 11, 16, 0.72);
+  color: var(--text);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.cam-off-btn svg {
+  width: 17px;
+  height: 17px;
+}
+.cam-off-btn:hover {
+  background: rgba(10, 11, 16, 0.9);
+  border-color: color-mix(in srgb, var(--error) 55%, var(--text));
+}
+.cam-off-btn:active {
+  transform: scale(0.96);
+}
+.cam-off-btn:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.cam-off-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .cam-label {
   position: absolute;

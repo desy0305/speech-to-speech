@@ -605,6 +605,8 @@ const searchKeyInput = $("#search-key");
 const camPip = $("#cam-pip");
 /** @type {HTMLVideoElement} */
 const camVideo = $("#cam-video");
+/** @type {HTMLButtonElement} */
+const camOffBtn = $("#cam-off-btn");
 /** @type {HTMLElement} */
 const visionPip = $("#vision-pip");
 /** @type {HTMLElement} */
@@ -779,7 +781,14 @@ function isDirectMcpTool(name) {
 }
 
 function visualObserverContext() {
-  if (!visionObservations.length) return "";
+  if (
+    !toolsEnabled.visual_observer ||
+    !toolsEnabled.camera_snapshot ||
+    !visionConfig.enabled ||
+    !visionConfig.configured ||
+    visionConfig.healthy === false ||
+    !visionObservations.length
+  ) return "";
   const maxChars = Math.max(200, Number(visionConfig.maxContextChars) || 1200);
   const joined = visionObservations.slice(-4).join("\n");
   const clipped = joined.length > maxChars ? joined.slice(-maxChars) : joined;
@@ -1109,6 +1118,15 @@ function visionAgeLabel() {
   return `${seconds}s ago`;
 }
 
+/** @param {VisionObserverState} [state] */
+function clearVisionObserverContext(state = "idle") {
+  visionObservations = [];
+  visionObserverLastAt = 0;
+  visionObserverFailures = 0;
+  visionObserverLastError = "";
+  visionObserverState = state;
+}
+
 function syncVisionPanel() {
   const visionAvail = !!visionConfig.enabled && !!visionConfig.configured;
   const hasContext = visionObservations.length > 0;
@@ -1202,6 +1220,7 @@ function maybeStartVisionObserver() {
 }
 
 function rememberVisionObservation(text) {
+  if (!toolsEnabled.visual_observer || !toolsEnabled.camera_snapshot) return;
   const clean = cleanString(text).replace(/\s+/g, " ");
   if (!clean) return;
   const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -1366,15 +1385,13 @@ toolCamSwitch.addEventListener("change", async () => {
     toolsEnabled.camera_snapshot = true;
     toolCamHint.textContent = "Camera on. The assistant can take a snapshot when it needs to see.";
   } else {
-    stopVisionObserver();
-    disableCamera();
-    toolsEnabled.camera_snapshot = false;
-    toolsEnabled.visual_observer = false;
-    toolCamHint.textContent = "Let the assistant see through your webcam.";
+    turnCameraOff("Camera off. Visual observer context cleared.");
   }
-  saveTools();
-  maybeStartVisionObserver();
-  pushToolsToSession();
+  if (toolCamSwitch.checked) {
+    saveTools();
+    maybeStartVisionObserver();
+    pushToolsToSession();
+  }
 });
 
 toolVisionSwitch.addEventListener("change", async () => {
@@ -1385,6 +1402,15 @@ toolVisionSwitch.addEventListener("change", async () => {
   }
   toolsEnabled.visual_observer = toolVisionSwitch.checked;
   saveTools();
+  if (!toolsEnabled.visual_observer) {
+    stopVisionObserver();
+    clearVisionObserverContext("idle");
+    syncToolsUi();
+    if (client && LIVE_STATES.has(currentState)) {
+      client.updateSession({ instructions: effectiveInstructions() });
+    }
+    return;
+  }
   if (toolsEnabled.visual_observer) {
     await fetchVisionObserverConfig();
     if (visionConfig.healthy === false) {
@@ -1478,6 +1504,7 @@ async function enableCamera() {
   try { await camVideo.play(); } catch { /* autoplay quirks; muted video is fine */ }
   camPip.classList.add("visible");
   camPip.setAttribute("aria-hidden", "false");
+  camOffBtn.disabled = false;
   // Lets the footer reflow to the bottom-right (and hide on mobile) while the
   // webcam preview occupies the bottom of the stage.
   document.body.classList.add("cam-on");
@@ -1491,8 +1518,25 @@ function disableCamera() {
   camVideo.srcObject = null;
   camPip.classList.remove("visible");
   camPip.setAttribute("aria-hidden", "true");
+  camOffBtn.disabled = true;
   document.body.classList.remove("cam-on");
 }
+
+function turnCameraOff(message = "Camera off. Visual observer context cleared.") {
+  stopVisionObserver();
+  disableCamera();
+  toolsEnabled.camera_snapshot = false;
+  toolsEnabled.visual_observer = false;
+  clearVisionObserverContext("idle");
+  toolCamHint.textContent = message;
+  saveTools();
+  syncToolsUi();
+  pushToolsToSession();
+}
+
+camOffBtn.addEventListener("click", () => {
+  turnCameraOff();
+});
 
 /** Auto-start the webcam on arrival (the camera tool is on by default). If the
  *  user declines the permission, switch the tool off and reflect it in the UI
@@ -1500,18 +1544,14 @@ function disableCamera() {
 async function autoStartCamera() {
   if (!toolsEnabled.camera_snapshot || cameraStream) return;
   if (!navigator.mediaDevices?.getUserMedia) {
-    toolsEnabled.camera_snapshot = false;
-    saveTools();
-    syncToolsUi();
+    turnCameraOff("Camera API unavailable. Visual observer context cleared.");
     return;
   }
   try {
     await enableCamera();
   } catch (err) {
     console.warn("[main] camera auto-start declined/failed:", err);
-    toolsEnabled.camera_snapshot = false;
-    saveTools();
-    syncToolsUi();
+    turnCameraOff("Camera unavailable. Visual observer context cleared.");
   }
 }
 
@@ -1529,9 +1569,7 @@ async function watchCameraPermission() {
         void autoStartCamera();
         syncToolsUi();
       } else if (status.state === "denied") {
-        disableCamera();
-        if (toolsEnabled.camera_snapshot) { toolsEnabled.camera_snapshot = false; saveTools(); }
-        syncToolsUi();
+        turnCameraOff("Camera permission revoked. Visual observer context cleared.");
       }
     });
   } catch {

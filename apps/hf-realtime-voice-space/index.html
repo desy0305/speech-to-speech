@@ -158,6 +158,13 @@
     <!-- Webcam self-view, shown bottom-left while the camera tool is enabled -->
     <div id="cam-pip" class="cam-pip" aria-hidden="true">
       <video id="cam-video" class="cam-video" autoplay playsinline muted></video>
+      <button id="cam-off-btn" class="cam-off-btn" type="button" aria-label="Turn camera off" title="Turn camera off" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m2 2 20 20"/>
+          <path d="M10.7 6H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11"/>
+          <path d="M15 10.5 21 7v10l-3.2-1.9"/>
+        </svg>
+      </button>
       <span class="cam-flash" aria-hidden="true"></span>
       <span class="cam-label">camera</span>
     </div>

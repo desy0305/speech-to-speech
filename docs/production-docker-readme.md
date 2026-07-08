@@ -12,7 +12,8 @@ The local production stack is intentionally multi-container:
 - `backend-lmstudio-bgtts`: optional Bulgarian Ani TTS backend on `S2S_BG_PORT`
   (`8766`).
 - `ani-voice-api`: isolated Ani-Voice-API sidecar on `ANI_VOICE_PORT` (`8001`).
-- `ui-https`: optional LAN HTTPS reverse proxy on `UI_HTTPS_PORT` (`7862`).
+- `ui-https`: optional LAN/internet HTTPS reverse proxy on `UI_HTTPS_PORT`
+  (`50056`).
 - Docker MCP gateway: host-side process, not a compose service.
 
 Keeping these pieces separate is deliberate. The Ani sidecar has risky CUDA and
@@ -100,12 +101,27 @@ docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-an
 Open:
 
 ```text
-https://<LAN_IP>:7862/
+https://<LAN_IP>:50056/
 ```
 
 Accept or trust the self-signed certificate on the client machine. For an
 internet-facing server, replace this with a real certificate and a normal
 reverse proxy.
+
+The HTTPS proxy should be protected before it is exposed outside the host:
+
+```env
+UI_HTTPS_PORT=50056
+UI_HTTPS_AUTH_ENABLED=1
+UI_HTTPS_AUTH_USER=hfvoice
+UI_HTTPS_AUTH_PASSWORD=<strong-password>
+```
+
+If auth is enabled but the password is blank, the proxy denies access. The proxy
+also sends `noindex` headers, serves a deny-all `robots.txt`, rate-limits UI/API
+requests, and blocks common sensitive files such as `.env`, compose files, keys,
+certificates, database dumps, and logs. Expose only `UI_HTTPS_PORT` through the
+router/firewall; keep `UI_PORT` (`7860`) local.
 
 The LAN proxy exposes both realtime paths through the same HTTPS origin:
 `/s2s/v1/realtime` and `/s2s-bg/v1/realtime`. These are deliberately separate:
@@ -252,7 +268,7 @@ Expected:
 
 ## Troubleshooting
 
-- If the LAN UI loads but microphone does not work, use HTTPS on `7862`.
+- If the LAN UI loads but microphone does not work, use HTTPS on `50056`.
 - If the assistant appears to forget context after a tool call, check backend
   logs for LM Studio timeouts or provider rate limits.
 - If Cerebras returns `429`, switch to LM Studio or wait for the provider quota.

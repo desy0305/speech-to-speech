@@ -72,12 +72,26 @@ Start the normal backend, optional BG Ani backend, UI, and HTTPS proxy:
 docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-ani --profile lan-https up --build
 ```
 
-Open `https://<LAN_IP>:7862/` from another computer and accept the
+Open `https://<LAN_IP>:50056/` from another computer and accept the
 self-signed certificate warning. When the UI is loaded through HTTPS, `/api/config`
 automatically rewrites the named presets:
 
-- `LM Studio (local)` -> `https://<host>:7862/s2s/v1/realtime`
-- `LM Studio + BG TTS (Ani)` -> `https://<host>:7862/s2s-bg/v1/realtime`
+- `LM Studio (local)` -> `https://<host>:50056/s2s/v1/realtime`
+- `LM Studio + BG TTS (Ani)` -> `https://<host>:50056/s2s-bg/v1/realtime`
+
+Set the HTTPS proxy credentials before exposing this port outside your machine:
+
+```env
+UI_HTTPS_PORT=50056
+UI_HTTPS_AUTH_ENABLED=1
+UI_HTTPS_AUTH_USER=hfvoice
+UI_HTTPS_AUTH_PASSWORD=<strong-password>
+```
+
+If auth is enabled but the password is blank, the proxy denies access. The proxy
+also sends `noindex` headers, serves a deny-all `robots.txt`, rate-limits UI/API
+requests, and blocks common sensitive files such as `.env`, compose files, keys,
+certificates, database dumps, and logs.
 
 The HTTPS proxy keeps the routes separate: `/s2s/v1/realtime` reaches
 `backend-lmstudio`, and `/s2s-bg/v1/realtime` reaches
@@ -128,7 +142,7 @@ server such as LM Studio, set `SMOLVLM_API_KEY` to that local token.
 If another computer cannot reach the proxy, allow the HTTPS port on the host:
 
 ```powershell
-New-NetFirewallRule -DisplayName "HF Voice HTTPS 7862 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7862 -RemoteAddress <LAN_CIDR> -Profile Private,Public
+New-NetFirewallRule -DisplayName "HF Voice HTTPS 50056 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 50056 -RemoteAddress <LAN_CIDR> -Profile Private,Public
 ```
 
 ## Runtime Provider Switching

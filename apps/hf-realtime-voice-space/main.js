@@ -78,7 +78,7 @@ const BG_TTS_HINT =
   "Cyrillic transcript is ambiguous or noisy, assume the user is speaking Bulgarian, " +
   "not Russian.";
 
-const LAN_HTTPS_PORT = "7862";
+const LAN_HTTPS_PORT = "50056";
 
 function redirectLanHttpToHttps() {
   const host = window.location.hostname;

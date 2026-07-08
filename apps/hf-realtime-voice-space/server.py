@@ -37,16 +37,18 @@ the moment a slot is actually claimed (a grant), never while queued.
 """
 
 import asyncio
+import base64
 import ipaddress
 import json
 import logging
 import os
+import secrets
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -120,6 +122,15 @@ MCP_MAX_ARGUMENT_BYTES = _bounded_int_env("MCP_MAX_ARGUMENT_BYTES", 8192, 512, 6
 MCP_REQUEST_TIMEOUT_S = _bounded_float_env("MCP_REQUEST_TIMEOUT_S", 20.0, 2.0, 120.0)
 MCP_CONNECT_TIMEOUT_S = _bounded_float_env("MCP_CONNECT_TIMEOUT_S", 5.0, 0.5, 30.0)
 MCP_REQUEST_LOCK = asyncio.Lock()
+UI_HTTPS_AUTH_USER = os.environ.get("UI_HTTPS_AUTH_USER", "").strip()
+UI_HTTPS_AUTH_PASSWORD = os.environ.get("UI_HTTPS_AUTH_PASSWORD", "")
+UI_HTTPS_AUTH_ENABLED = os.environ.get("UI_HTTPS_AUTH_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+} or bool(UI_HTTPS_AUTH_USER or UI_HTTPS_AUTH_PASSWORD)
 QWEN_OMNI_BASE_URL = (
     os.environ.get("QWEN_OMNI_BASE_URL")
     or os.environ.get("LM_STUDIO_BASE_URL")
@@ -577,6 +588,39 @@ async def _backend_preset_availability(presets: list[dict[str, object]]) -> list
 
 
 app = FastAPI(title="s2s-demo")
+
+
+def _edge_auth_headers() -> dict[str, str]:
+    return {"WWW-Authenticate": 'Basic realm="HF Voice", charset="UTF-8"'}
+
+
+@app.get("/api/edge-auth")
+async def edge_auth(request: Request):
+    """Internal nginx auth_request endpoint for the internet-facing HTTPS proxy."""
+    if not UI_HTTPS_AUTH_ENABLED:
+        return Response(status_code=204)
+    if not UI_HTTPS_AUTH_USER or not UI_HTTPS_AUTH_PASSWORD:
+        logger.error("UI HTTPS auth is enabled but UI_HTTPS_AUTH_USER/PASSWORD is incomplete")
+        return Response(status_code=401, headers=_edge_auth_headers())
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "basic" or not token:
+        return Response(status_code=401, headers=_edge_auth_headers())
+    try:
+        decoded = base64.b64decode(token, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return Response(status_code=401, headers=_edge_auth_headers())
+
+    username, separator, password = decoded.partition(":")
+    if not separator:
+        return Response(status_code=401, headers=_edge_auth_headers())
+    if secrets.compare_digest(username, UI_HTTPS_AUTH_USER) and secrets.compare_digest(
+        password,
+        UI_HTTPS_AUTH_PASSWORD,
+    ):
+        return Response(status_code=204)
+    return Response(status_code=401, headers=_edge_auth_headers())
 
 
 @app.middleware("http")

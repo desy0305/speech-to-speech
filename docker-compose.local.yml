@@ -64,6 +64,9 @@ services:
           }
         ]
       MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-}
+      UI_HTTPS_AUTH_ENABLED: ${UI_HTTPS_AUTH_ENABLED:-}
+      UI_HTTPS_AUTH_USER: ${UI_HTTPS_AUTH_USER:-}
+      UI_HTTPS_AUTH_PASSWORD: ${UI_HTTPS_AUTH_PASSWORD:-}
       LM_STUDIO_API_KEY: ${LM_STUDIO_API_KEY:-}
       QWEN_OMNI_BASE_URL: ${QWEN_OMNI_BASE_URL:-}
       QWEN_OMNI_MODEL: ${QWEN_OMNI_MODEL:-ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF}
@@ -137,7 +140,7 @@ services:
       - ./deploy/local-https/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ${LAN_HTTPS_CERT_DIR:-./.local-https/certs}:/certs:ro
     ports:
-      - "${UI_HTTPS_PORT:-7862}:7861"
+      - "${UI_HTTPS_PORT:-50056}:7861"
     restart: unless-stopped
 
   smolvlm:

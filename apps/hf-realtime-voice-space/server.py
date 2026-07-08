@@ -331,7 +331,7 @@ def _is_localish_host(host: str) -> bool:
     clean = (host or "").strip().strip("[]").lower()
     if not clean:
         return False
-    if clean in {"localhost", "host.docker.internal"} or clean.endswith(".local"):
+    if clean in {"localhost", "host.docker.internal", "smolvlm"} or clean.endswith(".local"):
         return True
     try:
         ip = ipaddress.ip_address(clean)

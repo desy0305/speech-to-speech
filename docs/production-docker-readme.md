@@ -121,16 +121,20 @@ frames to a separate SmolVLM `llama-server` and injects a capped rolling visual
 summary into the main assistant instructions. It does not change STT, TTS, or
 the selected LLM provider.
 
-Start the vision model outside compose:
+Start the Docker vision model service:
 
 ```powershell
-llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF --port 8080
+docker compose -f docker-compose.local.yml --profile vision-observer up -d smolvlm
 ```
 
-Then enable the observer in `.env`:
+The service runs `llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF`,
+exposes `http://localhost:8080`, and shares the repo `cache/` directory for
+model downloads. Override `SMOLVLM_IMAGE`, `SMOLVLM_HF_REPO`, or
+`SMOLVLM_N_GPU_LAYERS` in `.env` if needed. The UI talks to the internal Docker
+URL by default:
 
 ```env
-SMOLVLM_BASE_URL=http://host.docker.internal:8080
+SMOLVLM_BASE_URL=http://smolvlm:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
 SMOLVLM_API_KEY=
 SMOLVLM_REQUIRE_LOCAL=1

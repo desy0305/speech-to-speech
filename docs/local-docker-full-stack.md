@@ -97,17 +97,20 @@ stack. When enabled, it reuses the webcam preview, sends periodic JPEG frames to
 a local SmolVLM `llama-server`, keeps only a capped rolling summary, and
 injects that hidden summary into the active instructions.
 
-Start SmolVLM outside Docker:
+Start the Docker SmolVLM service:
 
 ```powershell
-llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF --port 8080
+docker compose -f docker-compose.local.yml --profile vision-observer up -d smolvlm
 ```
 
-Add `-ngl 99` if you want llama.cpp to offload layers to a supported GPU.
-Then set:
+The service runs `llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF`,
+exposes `http://localhost:8080`, and shares the repo `cache/` directory for
+model downloads. Override `SMOLVLM_IMAGE`, `SMOLVLM_HF_REPO`, or
+`SMOLVLM_N_GPU_LAYERS` in `.env` if needed. The UI talks to the internal Docker
+URL by default:
 
 ```env
-SMOLVLM_BASE_URL=http://host.docker.internal:8080
+SMOLVLM_BASE_URL=http://smolvlm:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
 SMOLVLM_API_KEY=
 ```

@@ -32,6 +32,8 @@ from speech_to_speech.LLM.chat import (
 )
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn, build_compactor
 from speech_to_speech.LLM.text_prompt import build_text_system_prompt
+from speech_to_speech.LLM.tool_call.function_call import extract_inline_function_calls_from_text
+from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
 from speech_to_speech.LLM.utils import remove_unspeechable, resolve_auto_language
 from speech_to_speech.LLM.voice_prompt import build_voice_system_prompt
 from speech_to_speech.pipeline.cancel_scope import CancelScope
@@ -498,6 +500,75 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             chat.add_item(fc_item)
         yield self._chunk(turn, tools=[item])
 
+    def _raw_tools_for_turn(self, turn: _Turn) -> list[Any]:
+        response_tools = getattr(turn.response, "tools", None) if turn.response else None
+        return response_tools or getattr(turn.runtime_config.session, "tools", None) or []
+
+    def _tool_choice_for_turn(self, turn: _Turn) -> Any:
+        response_tool_choice = getattr(turn.response, "tool_choice", None) if turn.response else None
+        return response_tool_choice or getattr(turn.runtime_config.session, "tool_choice", None)
+
+    def _function_tools_for_turn(self, turn: _Turn) -> list[FunctionTool]:
+        function_tools: list[FunctionTool] = []
+        for raw_tool in self._raw_tools_for_turn(turn):
+            tool_dict = raw_tool if isinstance(raw_tool, dict) else raw_tool.model_dump(exclude_none=True)
+            if tool_dict.get("type") == "function":
+                function_tools.append(FunctionTool(**tool_dict))
+        return function_tools
+
+    def _fallback_tools_enabled(self, turn: _Turn) -> bool:
+        return bool(self._function_tools_for_turn(turn)) and self._tool_choice_for_turn(turn) != "none"
+
+    def _replace_pending_assistant_text(self, state: _GenState, clean_text: str) -> None:
+        """Remove raw inline-call tags from assistant history before a recovered tool call."""
+        rewritten: list[SupportedItem] = []
+        replacement_added = False
+        for item in state.pending:
+            if isinstance(item, RealtimeConversationItemAssistantMessage):
+                if clean_text.strip() and not replacement_added:
+                    rewritten.append(
+                        RealtimeConversationItemAssistantMessage(
+                            type="message",
+                            role="assistant",
+                            content=[AssistantContent(type="output_text", text=clean_text.strip())],
+                        )
+                    )
+                    replacement_added = True
+                continue
+            rewritten.append(item)
+        state.pending = rewritten
+
+    def _extract_inline_tool_calls(
+        self,
+        text: str,
+        state: _GenState,
+        turn: _Turn,
+    ) -> tuple[str, list[ResponseFunctionToolCall]]:
+        if state.tools or not self._fallback_tools_enabled(turn):
+            return text, []
+
+        clean_text, inline_calls = extract_inline_function_calls_from_text(text)
+        if not inline_calls:
+            return text, []
+
+        parsed_tools: list[ResponseFunctionToolCall] = []
+        function_tools = self._function_tools_for_turn(turn)
+        for inline_call in inline_calls:
+            if parsed_tools:
+                logger.warning(
+                    "Skipping extra inline tool call '%s'; only one tool call is allowed per response",
+                    inline_call.function_name,
+                )
+                continue
+            try:
+                parsed_tools.append(inline_call.to_realtime_function_tool_call(function_tools))
+            except ValueError as exc:
+                logger.warning("Skipping invalid inline tool call: %s", exc)
+
+        if parsed_tools:
+            self._replace_pending_assistant_text(state, clean_text)
+        return clean_text, parsed_tools
+
     # ── consumption ─────────────────────────────────────────────────────────--
 
     def _consume_streaming(self, events: Iterator[ProviderEvent], state: _GenState, turn: _Turn) -> Iterator[LLMOut]:
@@ -540,6 +611,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     sentence_batch = []
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
+                if not turn.wants_audio and self._fallback_tools_enabled(turn):
+                    state.clean_text += event.text
+                    printable_text += event.text
+                    continue
                 if not turn.wants_audio:
                     # Text-only: forward verbatim. Keep every character (no
                     # remove_unspeechable, which strips TTS-unfriendly symbols) and
@@ -571,6 +646,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     printable_text = sentences[-1]
 
         if not cancelled:
+            printable_text, fallback_tools = self._extract_inline_tool_calls(printable_text, state, turn)
             if printable_text.strip():
                 sentence_batch.append(printable_text.strip())
             if sentence_batch:
@@ -579,6 +655,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 else:
                     logger.debug(f"Clean text: {state.clean_text}")
                     yield from _flush(sentence_batch)
+            for tool_call in fallback_tools:
+                yield from self._record_tool_call(state, turn, tool_call)
             logger.info(f"Tools: {state.tools}")
 
     def _consume_nonstreaming(self, events: Iterator[ProviderEvent], state: _GenState, turn: _Turn) -> Iterator[LLMOut]:
@@ -599,6 +677,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 # Text-only keeps every character verbatim; audio strips
                 # TTS-unfriendly symbols via remove_unspeechable.
                 spoken = event.text if not turn.wants_audio else remove_unspeechable(event.text)
+                spoken, fallback_tools = self._extract_inline_tool_calls(spoken, state, turn)
                 state.clean_text += spoken
                 out = spoken if not turn.wants_audio else spoken.strip()
                 if (
@@ -607,6 +686,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
                 ):
                     yield self._chunk(turn, text=out)
+                for tool_call in fallback_tools:
+                    yield from self._record_tool_call(state, turn, tool_call)
         logger.debug(f"Clean text: {state.clean_text}")
         logger.info(f"Tools: {state.tools}")
 

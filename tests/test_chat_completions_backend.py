@@ -326,6 +326,63 @@ def test_streaming_tool_call_preserves_provider_extra_content():
     assert tool_call_message["tool_calls"][0]["extra_content"] == extra_content
 
 
+def test_streaming_inline_call_tag_is_recovered_as_tool_call():
+    h = _make_handler(stream=True)
+    h.client.chat.completions.create = lambda **k: _FakeStream(
+        [
+            _chunk(content="Ще проверя паметта си... "),
+            _chunk(content='<call:search_nodes{query: "User"}>'),
+        ]
+    )
+    text, tools, _usage, chat, _end = _drive(
+        h,
+        tools=[
+            {
+                "type": "function",
+                "name": "search_nodes",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            }
+        ],
+        tool_choice="auto",
+    )
+    assert "<call:" not in text
+    assert "Ще проверя" in text
+    assert len(tools) == 1
+    assert tools[0].name == "search_nodes"
+    assert json.loads(tools[0].arguments) == {"query": "User"}
+    assistant_messages = [item for item in chat.buffer if getattr(item, "role", None) == "assistant"]
+    assert assistant_messages
+    assert "<call:" not in assistant_messages[-1].content[0].text
+
+
+def test_text_only_inline_call_tag_is_recovered_without_leaking_text():
+    h = _make_handler(stream=True)
+    h.client.chat.completions.create = lambda **k: _FakeStream(
+        [
+            _chunk(content="Разбира се, правя снимка... "),
+            _chunk(content="<call:camera_snapshot{}>"),
+        ]
+    )
+    text, tools, _usage, chat, _end = _drive(
+        h,
+        response=RealtimeResponseCreateParams(output_modalities=["text"]),
+        tools=[{"type": "function", "name": "camera_snapshot", "parameters": {"type": "object", "properties": {}}}],
+        tool_choice="auto",
+    )
+    assert "<call:" not in text
+    assert "правя снимка" in text
+    assert len(tools) == 1
+    assert tools[0].name == "camera_snapshot"
+    assert json.loads(tools[0].arguments) == {}
+    assistant_messages = [item for item in chat.buffer if getattr(item, "role", None) == "assistant"]
+    assert assistant_messages
+    assert "<call:" not in assistant_messages[-1].content[0].text
+
+
 def test_tool_call_recorded_before_chunk_is_emitted():
     """Regression: a fast client can return function_call_output before the
     deferred end-of-turn write-back runs. The call must already be in history

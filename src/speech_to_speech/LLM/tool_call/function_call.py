@@ -28,6 +28,11 @@ _LENIENT_CALL_RE = re.compile(
     r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*"
     r"\((?:[^()\"']+|\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')*\)"
 )
+_INLINE_CALL_RE = re.compile(
+    r"<call:\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(\{.*?\})\s*>",
+    re.DOTALL,
+)
+_BARE_JSON_KEY_RE = re.compile(r"([,{]\s*)([A-Za-z_]\w*)(\s*:)")
 
 
 # ── AST / tokenize helpers ───────────────────────────────────────────
@@ -177,6 +182,29 @@ def _parse_call_expr(expr: str) -> "FunctionToolCall":
     )
 
 
+def _loads_jsonish_object(source: str) -> "OrderedDict[str, Any]":
+    """Parse the small JSON-like object in ``<call:name{...}>`` fallback tags."""
+    text = source.strip()
+    if not text:
+        return OrderedDict()
+
+    def _loads(value: str) -> Any:
+        return json.loads(value, object_pairs_hook=OrderedDict)
+
+    try:
+        parsed = _loads(text)
+    except json.JSONDecodeError:
+        quoted_keys = _BARE_JSON_KEY_RE.sub(r'\1"\2"\3', text)
+        try:
+            parsed = _loads(quoted_keys)
+        except json.JSONDecodeError:
+            parsed = ast.literal_eval(quoted_keys)
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Inline call arguments must be an object: {source!r}")
+    return OrderedDict(parsed)
+
+
 # ── Data model ───────────────────────────────────────────────────────
 
 
@@ -319,3 +347,31 @@ def extract_function_calls_from_text(text: str, block_regex: str = ".*") -> Tupl
         return outside, parse_function_call(inside)
     except Exception:
         return outside, []
+
+
+def extract_inline_function_calls_from_text(text: str) -> Tuple[str, List[FunctionToolCall]]:
+    """Extract model-emitted ``<call:tool{args}>`` fallback tool calls.
+
+    Some OpenAI-compatible chat providers occasionally emit this tag as plain
+    text instead of returning a native tool call. Names and arguments are still
+    validated later against the declared session tools.
+    """
+    matches = list(_INLINE_CALL_RE.finditer(text))
+    if not matches:
+        return text, []
+
+    calls: List[FunctionToolCall] = []
+    for match in matches:
+        try:
+            calls.append(
+                FunctionToolCall(
+                    function_name=match.group(1),
+                    parameters=_loads_jsonish_object(match.group(2)),
+                    original_string=match.group(0),
+                )
+            )
+        except Exception as exc:
+            logger.warning("Skipping invalid inline tool call %r: %s", match.group(0), exc)
+
+    outside = _INLINE_CALL_RE.sub("", text)
+    return outside, calls

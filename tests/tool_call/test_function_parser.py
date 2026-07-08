@@ -6,6 +6,7 @@ from speech_to_speech.LLM.tool_call import function_call as function_call_module
 from speech_to_speech.LLM.tool_call.function_call import (
     FunctionToolCall,
     extract_function_calls_from_text,
+    extract_inline_function_calls_from_text,
     parse_function_call,
 )
 from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
@@ -208,6 +209,30 @@ class TestExtractFromText:
         assert len(calls) == 1
         assert calls[0].function_name == "camera"
         assert calls[0].parameters == {"question": "What is in front of me?"}
+
+
+class TestExtractInlineCallTags:
+    def test_extracts_observed_search_nodes_tag_with_bare_key(self):
+        text = 'Ще проверя паметта си... <call:search_nodes{query: "User"}>'
+        outside, calls = extract_inline_function_calls_from_text(text)
+        assert outside.strip() == "Ще проверя паметта си..."
+        assert len(calls) == 1
+        assert calls[0].function_name == "search_nodes"
+        assert calls[0].parameters == {"query": "User"}
+
+    def test_extracts_empty_argument_tags(self):
+        outside, calls = extract_inline_function_calls_from_text("<call:mcp_list_tools{}> <call:camera_snapshot{}>")
+        assert outside.strip() == ""
+        assert [call.function_name for call in calls] == ["mcp_list_tools", "camera_snapshot"]
+        assert calls[0].parameters == {}
+        assert calls[1].parameters == {}
+
+    def test_extracts_strict_json_arguments(self):
+        text = '<call:mcp_call{"calls":[{"name":"search_nodes","arguments":{"query":"Lazar"}}]}>'
+        outside, calls = extract_inline_function_calls_from_text(text)
+        assert outside == ""
+        assert calls[0].function_name == "mcp_call"
+        assert calls[0].parameters == {"calls": [{"name": "search_nodes", "arguments": {"query": "Lazar"}}]}
 
 
 # ---------------------------------------------------------------------------

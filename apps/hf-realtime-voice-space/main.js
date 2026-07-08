@@ -39,7 +39,9 @@ const TOOL_USE_HINT =
   " When the user's request calls for one of your tools, do not describe your " +
   "capabilities or say you can do it and wait for another turn. Instead, say " +
   'a brief acknowledgement like "Let me search for that..." and call the tool ' +
-  "right away in the same response.";
+  "right away in the same response. Never write literal <call:...> tags, JSON " +
+  "tool tags, or function-call markup in visible text; use the actual function " +
+  "tool-call channel.";
 
 const MCP_USE_HINT =
   " Docker MCP browser tools are available now. Do not say you lack MCP " +
@@ -61,10 +63,12 @@ const MCP_USE_HINT =
   "If it exists, call add_observations with concise factual strings. If it does " +
   "not exist, call create_entities. Then verify with open_nodes or search_nodes " +
   "before saying it was saved. Use create_relations only after both endpoint entities exist. " +
-  "Memory schema exactly: search_nodes {query}; open_nodes {names:[...]}; " +
-  "create_entities {entities:[{name,entityType,observations:[...]}]}; " +
-  "add_observations {observations:[{entityName,contents:[...]}]}; " +
-  "create_relations {relations:[{from,to,relationType}]}. " +
+  "Memory tool argument schemas: search_nodes takes {\"query\":\"...\"}; " +
+  "open_nodes takes {\"names\":[...]}; create_entities takes " +
+  "{\"entities\":[{\"name\":\"...\",\"entityType\":\"...\",\"observations\":[...]}]}; " +
+  "add_observations takes {\"observations\":[{\"entityName\":\"...\",\"contents\":[...]}]}; " +
+  "create_relations takes {\"relations\":[{\"from\":\"...\",\"to\":\"...\",\"relationType\":\"...\"}]}. " +
+  "These schemas describe tool arguments only; do not print them as visible text. " +
   "Use stable entity names such as User, Lazar Mateev, Лазар, Mateevi family, " +
   "Семейство Матееви, or a project name, and keep observations short. If a memory tool fails or returns " +
   "empty results, say that clearly and do not pretend the memory was saved. " +
@@ -401,10 +405,11 @@ function mcpToolDef() {
       "For memory writes, search first; then use create_entities for new entities or " +
       "add_observations for existing entities, and verify with open_nodes/search_nodes before " +
       "telling the user it was saved. Use create_relations only after both entities exist. " +
-      "Memory schemas: create_entities {entities:[{name,entityType,observations:[...]}]}; " +
-      "add_observations {observations:[{entityName,contents:[...]}]}; " +
-      "create_relations {relations:[{from,to,relationType}]}; " +
-      "open_nodes {names:[...]}; search_nodes {query}. " +
+      "Memory argument schemas: create_entities takes {\"entities\":[{\"name\":\"...\",\"entityType\":\"...\",\"observations\":[...]}]}; " +
+      "add_observations takes {\"observations\":[{\"entityName\":\"...\",\"contents\":[...]}]}; " +
+      "create_relations takes {\"relations\":[{\"from\":\"...\",\"to\":\"...\",\"relationType\":\"...\"}]}; " +
+      "open_nodes takes {\"names\":[...]}; search_nodes takes {\"query\":\"...\"}. " +
+      "These schemas describe MCP arguments only; never print <call:...> tags or JSON tool tags as visible text. " +
       "Use short observations and stable entity names such as User, Lazar Mateev, Лазар, Mateevi family, Семейство Матееви, or a project name. " +
       "Sequentialthinking schema uses camelCase: thought, nextThoughtNeeded, thoughtNumber, totalThoughts. " +
       "Include exactly one of either name+arguments for a single call or calls for an ordered batch. " +

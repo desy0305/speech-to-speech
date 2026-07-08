@@ -1096,7 +1096,13 @@ function stopVisionObserver() {
 
 function maybeStartVisionObserver() {
   stopVisionObserver();
-  if (!toolsEnabled.visual_observer || !toolsEnabled.camera_snapshot || !visionConfig.enabled || !visionConfig.configured) {
+  if (
+    !toolsEnabled.visual_observer ||
+    !toolsEnabled.camera_snapshot ||
+    !visionConfig.enabled ||
+    !visionConfig.configured ||
+    visionConfig.healthy === false
+  ) {
     syncToolsUi();
     return;
   }
@@ -1127,7 +1133,7 @@ function rememberVisionObservation(text) {
 
 async function runVisionObserverTick() {
   if (visionObserverInFlight || document.hidden) return;
-  if (!toolsEnabled.visual_observer || !visionConfig.enabled || !visionConfig.configured) return;
+  if (!toolsEnabled.visual_observer || !visionConfig.enabled || !visionConfig.configured || visionConfig.healthy === false) return;
   const image = captureSnapshot();
   if (!image) {
     toolVisionHint.textContent = "Waiting for the camera frame before observing.";
@@ -1280,6 +1286,18 @@ toolVisionSwitch.addEventListener("change", async () => {
     return;
   }
   toolsEnabled.visual_observer = toolVisionSwitch.checked;
+  saveTools();
+  if (toolsEnabled.visual_observer) {
+    await fetchVisionObserverConfig();
+    if (visionConfig.healthy === false) {
+      stopVisionObserver();
+      syncToolsUi();
+      if (client && LIVE_STATES.has(currentState)) {
+        client.updateSession({ instructions: effectiveInstructions() });
+      }
+      return;
+    }
+  }
   if (toolsEnabled.visual_observer && !toolsEnabled.camera_snapshot) {
     try {
       await enableCamera();

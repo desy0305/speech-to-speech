@@ -132,12 +132,16 @@ Then enable the observer in `.env`:
 ```env
 SMOLVLM_BASE_URL=http://host.docker.internal:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
+SMOLVLM_API_KEY=
 SMOLVLM_REQUIRE_LOCAL=1
 ```
 
 The UI server calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
 `image_url` content, matching llama.cpp's OpenAI-compatible multimodal route.
 Set `VISION_OBSERVER_ENABLED=0` only when you want to hide the feature entirely.
+`SMOLVLM_BASE_URL` may include or omit `/v1`. If you target an authenticated
+local OpenAI-style server such as LM Studio, set `SMOLVLM_API_KEY` to that local
+token.
 
 ## Memory And MCP
 

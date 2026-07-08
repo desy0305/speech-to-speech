@@ -109,12 +109,18 @@ Then set:
 ```env
 SMOLVLM_BASE_URL=http://host.docker.internal:8080
 SMOLVLM_MODEL=ggml-org/SmolVLM-500M-Instruct-GGUF
+SMOLVLM_API_KEY=
 ```
 
 The app calls `SMOLVLM_BASE_URL/v1/chat/completions` with typed
 `image_url` content. Keep `SMOLVLM_REQUIRE_LOCAL=1` unless you intentionally
 want to allow a non-local vision endpoint. Set `VISION_OBSERVER_ENABLED=0` only
 when you want to hide the feature entirely.
+
+`SMOLVLM_BASE_URL` can include or omit `/v1`; both
+`http://host.docker.internal:8080` and `http://host.docker.internal:8080/v1`
+are accepted. If you point the observer at an authenticated local OpenAI-style
+server such as LM Studio, set `SMOLVLM_API_KEY` to that local token.
 
 If another computer cannot reach the proxy, allow the HTTPS port on the host:
 

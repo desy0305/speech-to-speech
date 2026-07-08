@@ -157,6 +157,11 @@ VISION_OBSERVER_ENABLED = os.environ.get("VISION_OBSERVER_ENABLED", "1").strip()
 }
 SMOLVLM_BASE_URL = os.environ.get("SMOLVLM_BASE_URL", "http://host.docker.internal:8080").strip()
 SMOLVLM_MODEL = os.environ.get("SMOLVLM_MODEL", "ggml-org/SmolVLM-500M-Instruct-GGUF").strip()
+SMOLVLM_API_KEY = (
+    os.environ.get("SMOLVLM_API_KEY")
+    or os.environ.get("LM_STUDIO_API_KEY")
+    or ""
+).strip()
 SMOLVLM_REQUIRE_LOCAL = os.environ.get("SMOLVLM_REQUIRE_LOCAL", "1").strip().lower() not in {
     "0",
     "false",
@@ -356,7 +361,14 @@ def _qwen_omni_auth_headers() -> dict[str, str]:
 
 
 def _smolvlm_base_url() -> str:
-    return SMOLVLM_BASE_URL.rstrip("/")
+    base_url = SMOLVLM_BASE_URL.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+    return base_url
+
+
+def _smolvlm_auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {SMOLVLM_API_KEY}"} if SMOLVLM_API_KEY else {}
 
 
 def _smolvlm_url_error() -> str:
@@ -770,13 +782,20 @@ async def vision_observer_config():
     enabled = VISION_OBSERVER_ENABLED and not bool(error)
     healthy = False
     health_detail = ""
+    health_status = "offline"
     if enabled:
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(BACKEND_PRESET_HEALTH_TIMEOUT_S, connect=BACKEND_PRESET_HEALTH_TIMEOUT_S)
             ) as http:
-                resp = await http.get(_smolvlm_models_url())
-            healthy = resp.status_code < 500
+                resp = await http.get(_smolvlm_models_url(), headers=_smolvlm_auth_headers())
+            healthy = 200 <= resp.status_code < 300
+            if healthy:
+                health_status = "ready"
+            elif resp.status_code in {401, 403}:
+                health_status = "auth_invalid"
+            else:
+                health_status = "upstream_error"
             health_detail = f"SmolVLM health check returned HTTP {resp.status_code}."
         except httpx.RequestError as exc:
             health_detail = f"SmolVLM local server unreachable: {_safe_detail(exc) or exc.__class__.__name__}"
@@ -791,7 +810,7 @@ async def vision_observer_config():
         status = "ready"
         message = "Visual observer is ready."
     else:
-        status = "offline"
+        status = health_status
         message = health_detail or "SmolVLM local server is offline."
 
     return {
@@ -800,7 +819,9 @@ async def vision_observer_config():
         "healthy": healthy,
         "status": status,
         "message": message,
+        "baseUrl": _smolvlm_base_url(),
         "model": SMOLVLM_MODEL,
+        "authConfigured": bool(SMOLVLM_API_KEY),
         "intervalMs": VISION_OBSERVER_INTERVAL_MS,
         "maxContextChars": VISION_OBSERVER_MAX_CONTEXT_CHARS,
         "maxImageBytes": VISION_OBSERVER_MAX_IMAGE_BYTES,
@@ -840,12 +861,14 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
 
     try:
         async with httpx.AsyncClient(timeout=VISION_OBSERVER_TIMEOUT_S) as http:
-            resp = await http.post(_smolvlm_chat_url(), json=payload)
+            resp = await http.post(_smolvlm_chat_url(), json=payload, headers=_smolvlm_auth_headers())
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"SmolVLM local server unreachable: {_safe_detail(exc) or exc.__class__.__name__}",
         ) from exc
+    if resp.status_code in {401, 403}:
+        raise HTTPException(status_code=502, detail=f"SmolVLM rejected authentication with HTTP {resp.status_code}.")
     if resp.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"SmolVLM returned HTTP {resp.status_code}: {resp.text[:300]}")
 

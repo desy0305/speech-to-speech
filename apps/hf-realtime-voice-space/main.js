@@ -929,11 +929,15 @@ function updateRestartAvailability() {
   const blocked = currentState === "connecting" || currentState === "queued" || currentState === "your-turn";
   const live = LIVE_STATES.has(currentState);
   const changed = hasRestartRequiredChanges();
-  restartBtn.disabled = blocked || (live && !changed);
+  const pendingUrl = settingsModal.open && allowDirect ? inputLbUrl.value : settings.directUrl;
+  const unavailable = backendUnavailableMessageForUrl(pendingUrl);
+  restartBtn.disabled = blocked || !!unavailable || (live && !changed);
   restartHint.hidden = false;
   restartHint.textContent = blocked
     ? "Wait for the current connection step to finish."
-    : live
+    : unavailable
+      ? unavailable
+      : live
       ? changed
         ? "Pending backend/provider/model changes apply after restart."
         : "Backend/provider/model already match this live session."
@@ -1877,7 +1881,7 @@ function connectionTarget() {
   }
   const preset = knownPresetForUrl(settings.directUrl);
   if (preset?.availability === "offline") {
-    throw new Error(`${preset.label} is offline. Start that Docker profile or choose an available speech backend.`);
+    throw backendUnavailableError(preset);
   }
   return { directUrl };
 }
@@ -2340,6 +2344,43 @@ function presetForId(id) {
   return backendPresets.find((preset) => preset.id === id);
 }
 
+/** @param {BackendPreset | undefined} preset @returns {boolean} */
+function isOfflineBackendPreset(preset) {
+  return !!preset && preset.id !== "custom" && preset.availability === "offline";
+}
+
+/** @param {BackendPreset | undefined} preset @returns {BackendPreset | undefined} */
+function connectableBackendPreset(preset) {
+  return isOfflineBackendPreset(preset) ? undefined : preset;
+}
+
+/** @param {BackendPreset | undefined} preset @returns {string} */
+function backendUnavailableMessage(preset) {
+  if (!isOfflineBackendPreset(preset)) return "";
+  return `${preset.label} is offline. Start that Docker profile or choose an available speech backend.`;
+}
+
+/** @param {string} url @returns {string} */
+function backendUnavailableMessageForUrl(url) {
+  return backendUnavailableMessage(knownPresetForUrl(url));
+}
+
+/** @param {BackendPreset} preset @returns {Error & { code?: string }} */
+function backendUnavailableError(preset) {
+  const err = /** @type {Error & { code?: string }} */ (new Error(backendUnavailableMessage(preset)));
+  err.code = "backend-offline";
+  return err;
+}
+
+/** @returns {BackendPreset | undefined} */
+function firstConnectableBackendPreset() {
+  return (
+    connectableBackendPreset(presetForId(runtimeStack.activeBackend || "")) ||
+    backendPresets.find((preset) => preset.id !== "custom" && !isOfflineBackendPreset(preset) && !!preset.url) ||
+    backendPresets.find((preset) => preset.id === "custom")
+  );
+}
+
 /** @param {string} url @returns {BackendPreset | undefined} */
 function knownPresetForUrl(url) {
   const target = buildDirectWsUrl(url);
@@ -2352,17 +2393,22 @@ function isKnownNonCustomPresetUrl(url) {
 }
 
 function applyBackendPresetFromConfig(directUrl, hadStoredBackendPreset) {
-  const activePreset = presetForId(runtimeStack.activeBackend || "");
-  const storedPreset = presetForId(settings.backendPreset || "");
-  if (storedPreset?.id === "custom") return;
+  const activePreset = connectableBackendPreset(presetForId(runtimeStack.activeBackend || ""));
+  const storedPresetRaw = presetForId(settings.backendPreset || "");
+  if (storedPresetRaw?.id === "custom") return;
+  const storedPreset = connectableBackendPreset(storedPresetRaw);
 
-  const currentPreset = settings.directUrl ? knownPresetForUrl(settings.directUrl) : undefined;
+  const currentPresetRaw = settings.directUrl ? knownPresetForUrl(settings.directUrl) : undefined;
+  const currentPreset = connectableBackendPreset(currentPresetRaw);
   let chosen = storedPreset || currentPreset;
   if (!chosen && !hadStoredBackendPreset && activePreset && (!settings.directUrl || currentPreset)) {
     chosen = activePreset;
   }
   if (!chosen && !settings.directUrl && directUrl) {
-    chosen = presetForUrl(directUrl);
+    chosen = connectableBackendPreset(presetForUrl(directUrl));
+  }
+  if (!chosen && currentPresetRaw && isOfflineBackendPreset(currentPresetRaw)) {
+    chosen = firstConnectableBackendPreset();
   }
   if (!chosen || chosen.id === "custom" || !chosen.url) return;
 
@@ -2431,6 +2477,8 @@ function syncBackendPresetUi(url = settings.directUrl) {
       ? ` (${preset.availability})`
       : "";
     option.textContent = `${preset.label}${status}`;
+    option.disabled = isOfflineBackendPreset(preset);
+    if (preset.availabilityDetail) option.title = preset.availabilityDetail;
     backendPresetSelect.append(option);
   }
 
@@ -2525,6 +2573,14 @@ function promptServerUrl() {
   inputLbUrl.focus();
 }
 
+/** @param {string} message */
+function showBackendUnavailable(message) {
+  if (!settingsModal.open) openSettings();
+  syncBackendPresetUi(settings.directUrl);
+  backendPresetHint.textContent = message;
+  setCaption(message, "error");
+}
+
 settingsForm.addEventListener("submit", (event) => {
   const submitter = /** @type {HTMLButtonElement | null} */ ((/** @type {SubmitEvent} */ (event)).submitter);
   if (submitter?.value !== "save") return;
@@ -2545,6 +2601,21 @@ settingsForm.addEventListener("submit", (event) => {
 backendPresetSelect.addEventListener("change", () => {
   const preset = backendPresets.find((item) => item.id === backendPresetSelect.value);
   if (!preset) return;
+  if (isOfflineBackendPreset(preset)) {
+    const fallback = firstConnectableBackendPreset();
+    if (fallback?.url) {
+      backendPresetSelect.value = fallback.id;
+      inputLbUrl.value = fallback.url;
+      settings = { ...settings, ...llmSelectionForPreset(fallback), backendPreset: fallback.id, directUrl: fallback.url };
+      saveSettings(settings);
+    }
+    const message = backendUnavailableMessage(preset);
+    backendPresetHint.textContent = message;
+    setCaption(message, "error");
+    syncBackendPresetUi(inputLbUrl.value);
+    updateRestartAvailability();
+    return;
+  }
   if (preset.url) {
     inputLbUrl.value = preset.url;
     settings = { ...settings, ...llmSelectionForPreset(preset), backendPreset: preset.id, directUrl: preset.url };
@@ -2556,6 +2627,7 @@ backendPresetSelect.addEventListener("change", () => {
 
 inputLbUrl.addEventListener("input", () => {
   syncBackendPresetUi(inputLbUrl.value);
+  updateRestartAvailability();
 });
 
 llmProviderSelect.addEventListener("change", () => {
@@ -2592,6 +2664,8 @@ restartBtn.addEventListener("click", async () => {
   settings = readSettingsFromForm();
   saveSettings(settings);
   if (missingServerUrl()) { promptServerUrl(); return; } // keep settings open
+  const backendMessage = backendUnavailableMessageForUrl(settings.directUrl);
+  if (backendMessage) { showBackendUnavailable(backendMessage); return; }
   settingsModal.close();
   // Grab the AudioContext NOW, inside the click gesture — teardown() awaits, and
   // creating it afterwards would fall outside the gesture (silent on iOS).
@@ -2612,6 +2686,8 @@ circleBtn.addEventListener("click", async () => {
     }
     if (currentState === "idle" || currentState === "error") {
       if (missingServerUrl()) { promptServerUrl(); return; }
+      const backendMessage = backendUnavailableMessageForUrl(settings.directUrl);
+      if (backendMessage) { showBackendUnavailable(backendMessage); return; }
       await doStart();
     }
   } catch (err) {
@@ -2635,6 +2711,12 @@ async function handleStartError(err) {
   if (err && err.code === "queue-full") {
     await teardown();
     account.showBusy();
+    return;
+  }
+  if (err && err.code === "backend-offline") {
+    if (client) await teardown();
+    else setState("idle");
+    showBackendUnavailable(err.message || "Selected speech backend is offline.");
     return;
   }
   // Our place lapsed (ticket reaped, or the join window ran out). Recoverable, not

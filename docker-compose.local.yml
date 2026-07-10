@@ -168,7 +168,7 @@ services:
     restart: unless-stopped
 
   backend-lmstudio:
-    profiles: ["lmstudio"]
+    profiles: ["lmstudio", "bgtts-ani"]
     image: ${S2S_BACKEND_IMAGE:-hf-realtime-voice-local-backend:latest}
     build:
       context: .

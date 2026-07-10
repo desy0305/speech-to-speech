@@ -701,6 +701,7 @@ let backendPresets = [];
 let runtimeStack = {};
 /** @type {ActiveSessionSnapshot | null} */
 let activeSession = null;
+let backendSwitchInFlight = false;
 /** @type {LlmProvider[]} */
 let llmProviders = [];
 /** @type {{ configured?: boolean; allowedTools?: string[]; servers?: any[] }} */
@@ -964,6 +965,7 @@ function openSettings() {
   syncGateUi();
   updateRestartAvailability();
   settingsModal.showModal();
+  void refreshBackendAvailability();
   void refreshProviderModels(settings.llmProvider);
 }
 
@@ -1863,6 +1865,23 @@ async function fetchConfig() {
   void refreshProviderModels(settings.llmProvider, { silent: true });
 }
 
+async function refreshBackendAvailability() {
+  try {
+    const res = await fetch("api/config", { cache: "no-store" });
+    if (!res.ok) return;
+    const json = await res.json();
+    const presets = Array.isArray(json.backendPresets)
+      ? json.backendPresets.map(normaliseBackendPreset).filter(Boolean)
+      : [];
+    if (presets.length) backendPresets = presets;
+    runtimeStack = normaliseRuntimeStack(json.runtime);
+    syncBackendPresetUi(inputLbUrl.value || settings.directUrl);
+    updateRestartAvailability();
+  } catch {
+    // Keep the last known availability if a refresh races a backend restart.
+  }
+}
+
 /**
  * Resolve where to connect, per the deploy's mode:
  *   • LB mode  -> `{ sessionUrl }`, the client POSTs the same-origin /api/session
@@ -2155,18 +2174,6 @@ function syncChatRuntime() {
   }
 }
 
-/** @param {BackendPreset} preset */
-function llmSelectionForPreset(preset) {
-  const wantedProvider = cleanString(preset.llmProvider).toLowerCase();
-  const provider =
-    llmProviders.find((item) => item.id.toLowerCase() === wantedProvider) ||
-    llmProviders.find((item) => item.label.toLowerCase() === wantedProvider);
-  if (!provider || !provider.configured) return {};
-  const wantedModel = cleanString(preset.llmModel);
-  const model = provider.models.find((item) => item.id === wantedModel) || provider.models[0];
-  return { llmProvider: provider.id, llmModel: model?.id || "" };
-}
-
 function syncLlmUi() {
   llmProviderSelect.replaceChildren();
   for (const provider of llmProviders) {
@@ -2416,7 +2423,6 @@ function applyBackendPresetFromConfig(directUrl, hadStoredBackendPreset) {
   if (presetChanged || buildDirectWsUrl(settings.directUrl) !== buildDirectWsUrl(chosen.url)) {
     settings = {
       ...settings,
-      ...(presetChanged ? llmSelectionForPreset(chosen) : {}),
       backendPreset: chosen.id,
       directUrl: chosen.url,
     };
@@ -2581,6 +2587,44 @@ function showBackendUnavailable(message) {
   setCaption(message, "error");
 }
 
+/** Reconnect using the settings currently shown in the dialog. */
+async function restartConversationFromSettings(audioContext, switchLabel = "") {
+  if (backendSwitchInFlight || currentState === "connecting") {
+    if (audioContext) void audioContext.close().catch(() => {});
+    return;
+  }
+
+  settings = readSettingsFromForm();
+  saveSettings(settings);
+  if (missingServerUrl()) {
+    if (audioContext) void audioContext.close().catch(() => {});
+    promptServerUrl();
+    return;
+  }
+  const backendMessage = backendUnavailableMessageForUrl(settings.directUrl);
+  if (backendMessage) {
+    if (audioContext) void audioContext.close().catch(() => {});
+    showBackendUnavailable(backendMessage);
+    return;
+  }
+
+  settingsModal.close();
+  backendSwitchInFlight = true;
+  const hadClient = !!client;
+  const hadMic = !!micStream;
+  if (switchLabel) setCaption(`Switching to ${switchLabel}...`, "muted");
+  try {
+    if (client) await teardown();
+    if (hadClient && !hadMic) await ensureTextSession(audioContext);
+    else await doStart(audioContext);
+  } catch (err) {
+    await handleStartError(err);
+  } finally {
+    backendSwitchInFlight = false;
+    updateRestartAvailability();
+  }
+}
+
 settingsForm.addEventListener("submit", (event) => {
   const submitter = /** @type {HTMLButtonElement | null} */ ((/** @type {SubmitEvent} */ (event)).submitter);
   if (submitter?.value !== "save") return;
@@ -2598,7 +2642,7 @@ settingsForm.addEventListener("submit", (event) => {
   updateRestartAvailability();
 });
 
-backendPresetSelect.addEventListener("change", () => {
+backendPresetSelect.addEventListener("change", async () => {
   const preset = backendPresets.find((item) => item.id === backendPresetSelect.value);
   if (!preset) return;
   if (isOfflineBackendPreset(preset)) {
@@ -2606,7 +2650,7 @@ backendPresetSelect.addEventListener("change", () => {
     if (fallback?.url) {
       backendPresetSelect.value = fallback.id;
       inputLbUrl.value = fallback.url;
-      settings = { ...settings, ...llmSelectionForPreset(fallback), backendPreset: fallback.id, directUrl: fallback.url };
+      settings = { ...settings, backendPreset: fallback.id, directUrl: fallback.url };
       saveSettings(settings);
     }
     const message = backendUnavailableMessage(preset);
@@ -2617,9 +2661,20 @@ backendPresetSelect.addEventListener("change", () => {
     return;
   }
   if (preset.url) {
+    const switchLive =
+      !!client &&
+      !!activeSession &&
+      LIVE_STATES.has(currentState) &&
+      activeSession.backendPreset !== preset.id;
+    const audioContext = switchLive ? createResumedAudioContext() : null;
     inputLbUrl.value = preset.url;
-    settings = { ...settings, ...llmSelectionForPreset(preset), backendPreset: preset.id, directUrl: preset.url };
+    settings = { ...settings, backendPreset: preset.id, directUrl: preset.url };
     saveSettings(settings);
+    syncLlmUi();
+    syncBackendPresetUi(inputLbUrl.value);
+    updateRestartAvailability();
+    if (switchLive) await restartConversationFromSettings(audioContext, preset.label);
+    return;
   }
   syncBackendPresetUi(inputLbUrl.value);
   updateRestartAvailability();
@@ -2660,22 +2715,10 @@ inputNoiseGate.addEventListener("input", () => {
 });
 
 restartBtn.addEventListener("click", async () => {
-  if (currentState === "connecting") return; // a connect is already underway
-  settings = readSettingsFromForm();
-  saveSettings(settings);
-  if (missingServerUrl()) { promptServerUrl(); return; } // keep settings open
-  const backendMessage = backendUnavailableMessageForUrl(settings.directUrl);
-  if (backendMessage) { showBackendUnavailable(backendMessage); return; }
-  settingsModal.close();
   // Grab the AudioContext NOW, inside the click gesture — teardown() awaits, and
   // creating it afterwards would fall outside the gesture (silent on iOS).
   const audioContext = createResumedAudioContext();
-  try {
-    if (client) await teardown();
-    await doStart(audioContext);
-  } catch (err) {
-    await handleStartError(err);
-  }
+  await restartConversationFromSettings(audioContext);
 });
 
 circleBtn.addEventListener("click", async () => {
@@ -2925,8 +2968,8 @@ async function enableVoiceForExistingSession() {
   }
 }
 
-/** @returns {Promise<S2sWsRealtimeClient>} */
-async function ensureTextSession() {
+/** @param {AudioContext | null} [audioContext] @returns {Promise<S2sWsRealtimeClient>} */
+async function ensureTextSession(audioContext = null) {
   if (client && LIVE_STATES.has(currentState)) return client;
   if (currentState === "connecting" || currentState === "queued" || currentState === "your-turn") {
     throw new Error("Session is still connecting.");
@@ -2940,7 +2983,7 @@ async function ensureTextSession() {
   setState("connecting");
   setCaption("Starting chat...", "muted");
   chat.setActivity("connecting", "Starting chat");
-  const audioContext = createResumedAudioContext();
+  if (!audioContext) audioContext = createResumedAudioContext();
 
   let target;
   try {

@@ -1411,10 +1411,24 @@ def _normalize_memory_relation(relation: object) -> dict[str, str]:
     return {"from": source, "to": target, "relationType": relation_type}
 
 
-def _normalize_memory_observation(observation: object) -> dict[str, object]:
+def _normalize_memory_observation(
+    observation: object, default_entity_name: str = ""
+) -> dict[str, object]:
     if not isinstance(observation, dict):
-        raise HTTPException(status_code=400, detail="Memory observation must be an object.")
-    entity_name = str(observation.get("entityName") or observation.get("name") or observation.get("entity") or "").strip()
+        contents = _string_list(observation)
+        if not default_entity_name or not contents:
+            raise HTTPException(
+                status_code=400,
+                detail="Memory observation strings require a top-level entityName.",
+            )
+        return {"entityName": default_entity_name, "contents": contents}
+    entity_name = str(
+        observation.get("entityName")
+        or observation.get("name")
+        or observation.get("entity")
+        or default_entity_name
+        or ""
+    ).strip()
     contents = _string_list(
         observation.get("contents")
         or observation.get("observations")
@@ -1441,9 +1455,38 @@ def _normalize_memory_arguments(name: str, arguments: dict) -> dict:
         clean["relations"] = [_normalize_memory_relation(relation) for relation in relations]
     elif name == "add_observations":
         observations = clean.get("observations")
+        default_entity_name = str(
+            clean.get("entityName") or clean.get("name") or clean.get("entity") or ""
+        ).strip()
+        if observations is None and any(
+            key in clean for key in ("contents", "addedObservations", "content", "text")
+        ):
+            observations = [
+                {
+                    "entityName": default_entity_name,
+                    "contents": clean.get("contents")
+                    or clean.get("addedObservations")
+                    or clean.get("content")
+                    or clean.get("text"),
+                }
+            ]
+        elif isinstance(observations, dict):
+            observations = [observations]
         if not isinstance(observations, list):
             raise HTTPException(status_code=400, detail="add_observations requires an observations array.")
-        clean["observations"] = [_normalize_memory_observation(observation) for observation in observations]
+        if observations and all(not isinstance(observation, dict) for observation in observations):
+            observations = [
+                {
+                    "entityName": default_entity_name,
+                    "contents": _string_list(observations),
+                }
+            ]
+        clean = {
+            "observations": [
+                _normalize_memory_observation(observation, default_entity_name)
+                for observation in observations
+            ]
+        }
     elif name == "open_nodes":
         clean["names"] = _string_list(clean.get("names") or clean.get("name"))
         if not clean["names"]:

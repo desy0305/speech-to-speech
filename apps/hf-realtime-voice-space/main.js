@@ -55,18 +55,20 @@ const MCP_USE_HINT =
   "create_relations when they are available. For recall questions like what do " +
   "you remember, where are we from, or what do you know about a person/project, " +
   "call search_nodes first with the user's keywords; if you know an exact entity " +
-  "name, call open_nodes. For Bulgarian or mixed-language recall, try both " +
-  "Cyrillic and Latin/transliterated queries before concluding there is no memory " +
+  "name, call open_nodes. Every search_nodes call must include both queryBg with a " +
+  "Bulgarian Cyrillic query and queryEn with an English query. The wrapper runs both " +
+  "queries before returning results, so do not conclude there is no memory until both complete " +
   "(for example Пловдив and Plovdiv, Матееви and Mateevi). Do not claim you " +
   "remember a fact unless it appears in the tool result. For save requests like " +
   "remember, save, note, or update this, first search for the relevant entity. " +
-  "If it exists, call add_observations with concise factual strings. If it does " +
+  "If it exists, call add_observations with entityName and a contents array of concise factual strings. If it does " +
   "not exist, call create_entities. Then verify with open_nodes or search_nodes " +
   "before saying it was saved. Use create_relations only after both endpoint entities exist. " +
-  "Memory tool argument schemas: search_nodes takes {\"query\":\"...\"}; " +
+  "Memory tool argument schemas: search_nodes takes " +
+  "{\"queryBg\":\"Bulgarian Cyrillic query\",\"queryEn\":\"English query\"}; " +
   "open_nodes takes {\"names\":[...]}; create_entities takes " +
   "{\"entities\":[{\"name\":\"...\",\"entityType\":\"...\",\"observations\":[...]}]}; " +
-  "add_observations takes {\"observations\":[{\"entityName\":\"...\",\"contents\":[...]}]}; " +
+  "add_observations takes {\"entityName\":\"...\",\"contents\":[...]}; " +
   "create_relations takes {\"relations\":[{\"from\":\"...\",\"to\":\"...\",\"relationType\":\"...\"}]}. " +
   "These schemas describe tool arguments only; do not print them as visible text. " +
   "Use stable entity names such as User, Lazar Mateev, Лазар, Mateevi family, " +
@@ -195,13 +197,14 @@ const DIRECT_MCP_TOOL_DEFS = {
     type: "function",
     name: "search_nodes",
     description:
-      "Search the persistent MCP memory knowledge graph. Use this before answering recall questions such as what you remember, where the user/family is from, or what is known about a person/project. For Bulgarian recall, try both Cyrillic and Latin/transliterated queries before concluding no memory exists.",
+      "Search the persistent MCP memory knowledge graph in both Bulgarian and English. Use this before answering recall questions such as what you remember, where the user/family is from, or what is known about a person/project. The wrapper runs both queries and combines their results.",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query, e.g. Lazar, Лазар, Plovdiv, Пловдив, Mateevi, Матееви." },
+        queryBg: { type: "string", description: "Bulgarian query written in Cyrillic." },
+        queryEn: { type: "string", description: "Equivalent English query using Latin script." },
       },
-      required: ["query"],
+      required: ["queryBg", "queryEn"],
     },
   },
   open_nodes: {
@@ -253,27 +256,18 @@ const DIRECT_MCP_TOOL_DEFS = {
     type: "function",
     name: "add_observations",
     description:
-      "Add concise factual observations to existing persistent MCP memory entities. Search/open the entity first when possible, then verify with open_nodes or search_nodes before saying it was saved.",
+      "Add concise factual observations to one existing persistent MCP memory entity. Search/open the entity first when possible, then verify with open_nodes or search_nodes before saying it was saved.",
     parameters: {
       type: "object",
       properties: {
-        observations: {
+        entityName: { type: "string", description: "Existing entity name." },
+        contents: {
           type: "array",
-          items: {
-            type: "object",
-            properties: {
-              entityName: { type: "string", description: "Existing entity name." },
-              contents: {
-                type: "array",
-                items: { type: "string" },
-                description: "Concise factual observations to add.",
-              },
-            },
-            required: ["entityName", "contents"],
-          },
+          items: { type: "string" },
+          description: "Concise factual observations to add.",
         },
       },
-      required: ["observations"],
+      required: ["entityName", "contents"],
     },
   },
   create_relations: {
@@ -399,16 +393,16 @@ function mcpToolDef() {
       "Use this when an allowlisted Docker MCP tool is needed and no simpler direct browser tool fits. " +
       "For multi-step browser flows, pass a calls array so navigate, wait, snapshot, console, " +
       "network, click, type, and screenshot actions run in one gateway session. " +
-      "For memory recall, call search_nodes with {query} or open_nodes with {names:[...]}. " +
+      "For memory recall, call search_nodes with {queryBg,queryEn} or open_nodes with {names:[...]}. " +
       "Prefer direct memory tools when they are available; use mcp_call when you need ordered batching. " +
-      "For Bulgarian or mixed-language recall, search both Cyrillic and Latin/transliterated forms before saying no memory was found. " +
+      "Every search_nodes call requires queryBg in Bulgarian Cyrillic and queryEn in English; the wrapper runs both. " +
       "For memory writes, search first; then use create_entities for new entities or " +
       "add_observations for existing entities, and verify with open_nodes/search_nodes before " +
       "telling the user it was saved. Use create_relations only after both entities exist. " +
       "Memory argument schemas: create_entities takes {\"entities\":[{\"name\":\"...\",\"entityType\":\"...\",\"observations\":[...]}]}; " +
-      "add_observations takes {\"observations\":[{\"entityName\":\"...\",\"contents\":[...]}]}; " +
+      "add_observations takes {\"entityName\":\"...\",\"contents\":[...]}; " +
       "create_relations takes {\"relations\":[{\"from\":\"...\",\"to\":\"...\",\"relationType\":\"...\"}]}; " +
-      "open_nodes takes {\"names\":[...]}; search_nodes takes {\"query\":\"...\"}. " +
+      "open_nodes takes {\"names\":[...]}; search_nodes takes {\"queryBg\":\"...\",\"queryEn\":\"...\"}. " +
       "These schemas describe MCP arguments only; never print <call:...> tags or JSON tool tags as visible text. " +
       "Use short observations and stable entity names such as User, Lazar Mateev, Лазар, Mateevi family, Семейство Матееви, or a project name. " +
       "Sequentialthinking schema uses camelCase: thought, nextThoughtNeeded, thoughtNumber, totalThoughts. " +
@@ -1730,13 +1724,70 @@ async function execWebSearch(query) {
   return lines.length > 1 ? lines.join("\n") : `${lines[0]}\nNo results found.`;
 }
 
+/** @param {Record<string, unknown>} args */
+function bilingualMemorySearchCalls(args) {
+  const queryBg = cleanString(args.queryBg || args.query_bg || args.bgQuery);
+  const queryEn = cleanString(args.queryEn || args.query_en || args.enQuery);
+  if (!queryBg || !queryEn) {
+    throw new Error("Memory search requires both queryBg (Bulgarian) and queryEn (English).");
+  }
+  if (!/[\u0400-\u04ff]/u.test(queryBg) || !/[A-Za-z]/.test(queryEn)) {
+    throw new Error("Memory search queryBg must use Cyrillic and queryEn must use Latin script.");
+  }
+  if (queryBg.toLocaleLowerCase("bg") === queryEn.toLocaleLowerCase("en")) {
+    throw new Error("Memory search requires two distinct Bulgarian and English queries.");
+  }
+  return [queryBg, queryEn].map((query) => ({ name: "search_nodes", arguments: { query } }));
+}
+
+/** @param {unknown[]} calls */
+function prepareMcpBatchCalls(calls) {
+  /** @type {{ name: string, arguments: Record<string, unknown> }[]} */
+  const prepared = [];
+  let usedBilingualShape = false;
+  for (const raw of calls) {
+    if (!raw || typeof raw !== "object") throw new Error("Each MCP call must be an object.");
+    const call = /** @type {Record<string, unknown>} */ (raw);
+    const callName = cleanString(call.name);
+    const callArgs = call.arguments && typeof call.arguments === "object"
+      ? /** @type {Record<string, unknown>} */ (call.arguments)
+      : {};
+    if (callName === "search_nodes" && (callArgs.queryBg || callArgs.queryEn || callArgs.query_bg || callArgs.query_en)) {
+      prepared.push(...bilingualMemorySearchCalls(callArgs));
+      usedBilingualShape = true;
+    } else {
+      prepared.push({ name: callName, arguments: callArgs });
+    }
+  }
+
+  const searchQueries = prepared
+    .filter((call) => call.name === "search_nodes")
+    .map((call) => cleanString(call.arguments.query))
+    .filter(Boolean);
+  if (searchQueries.length && !usedBilingualShape) {
+    const uniqueQueries = [...new Set(searchQueries.map((query) => query.toLocaleLowerCase()))];
+    const hasBulgarian = searchQueries.some((query) => /[\u0400-\u04ff]/u.test(query));
+    const hasEnglish = searchQueries.some((query) => /[A-Za-z]/.test(query));
+    if (uniqueQueries.length < 2 || !hasBulgarian || !hasEnglish) {
+      throw new Error("Memory search batches require distinct Bulgarian Cyrillic and English queries.");
+    }
+  }
+  if (prepared.length > 5) throw new Error("MCP batches are limited to five calls after bilingual expansion.");
+  return prepared;
+}
+
 /** @param {string} name @param {Record<string, unknown>} args @param {unknown[] | null} [calls] @returns {Promise<string>} */
 async function execMcpCall(name, args, calls = null) {
   if (!name && !calls?.length) return "No MCP tool name provided.";
+  const payload = calls?.length
+    ? { calls: prepareMcpBatchCalls(calls) }
+    : name === "search_nodes"
+      ? { calls: bilingualMemorySearchCalls(args) }
+      : { name, arguments: args };
   const res = await fetch("api/mcp/call", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(calls?.length ? { calls } : { name, arguments: args }),
+    body: JSON.stringify(payload),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) return `MCP tool failed: ${json.detail || res.status}`;
@@ -1782,7 +1833,7 @@ async function execMcpListTools() {
       usageHint:
         tools.healthy === false
           ? "The Docker MCP gateway is configured but offline. Start it with scripts/start-mcp-gateway.ps1, then retry."
-          : "For memory recall use the direct search_nodes/open_nodes tools. For Bulgarian recall, try both Cyrillic and Latin forms before saying nothing was found. For memory writes, search first, write with create_entities or add_observations, then verify with open_nodes/search_nodes before saying it was saved. Use browser_browse for one-step page inspection, or mcp_call with a calls array for stateful Playwright/browser flows and advanced allowlisted MCP calls.",
+          : "For memory recall use search_nodes with queryBg in Bulgarian Cyrillic and queryEn in English; both queries run before results are returned. For memory writes, search first, write with create_entities or add_observations, then verify with open_nodes/search_nodes before saying it was saved. Use browser_browse for one-step page inspection, or mcp_call with a calls array for stateful Playwright/browser flows and advanced allowlisted MCP calls.",
     },
     null,
     2,

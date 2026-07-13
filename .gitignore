@@ -230,3 +230,4 @@ cover/
 .tox/
 uv.lock
 .local-https/
+cache/

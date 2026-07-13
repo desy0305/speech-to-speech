@@ -5,7 +5,13 @@
 
 # Speech To Speech: Build local voice agents with open-source models
 
+This fork adds a complete local browser voice assistant around the modular
+speech pipeline: realtime microphone/audio streaming, runtime LLM and speech
+backend selection, persistent MCP memory, and optional SmolVLM camera context.
+The original Python package and CLI remain available for custom deployments.
+
 ## 📖 Quick Index
+* [Local multimodal S2S stack](#local-multimodal-s2s-stack)
 * [Approach](#approach)
   - [Structure](#structure)
   - [Modularity](#modularity)
@@ -14,14 +20,114 @@
   - [Realtime approach](#realtime-approach)
   - [Server/Client approach](#serverclient-approach)
   - [WebSocket approach](#websocket-approach)
-  - [Local approach](#local-approach-running-on-mac)
+  - [Local approach](#local-approach-mac)
   - [LLM Backend](#llm-backend)
   - [Realtime mode](#realtime-mode)
   - [Docker Server approach](#docker-server)
 * [Command-line usage](#command-line-usage)
-  - [Model parameters](#model-parameters)
+  - [Module-level parameters](#module-level-parameters)
+  - [VAD parameters](#vad-parameters)
+  - [STT, LLM and TTS parameters](#stt-llm-and-tts-parameters)
   - [Generation parameters](#generation-parameters)
-  - [Notable parameters](#notable-parameters)
+
+## Local Multimodal S2S Stack
+
+The browser application in `apps/hf-realtime-voice-space/` talks to an
+OpenAI Realtime-compatible WebSocket backend. Speech remains a modular cascade:
+local STT, a selectable LLM provider, and local TTS. Context services enrich the
+LLM session without replacing that working audio stack.
+
+| Layer | Default local implementation | Role |
+|---|---|---|
+| Browser UI | FastAPI static app on `http://localhost:7860` | Microphone, playback, chat, settings, tools, and camera controls |
+| Realtime transport | `/v1/realtime` WebSocket | Streaming PCM audio, transcripts, tool calls, and response audio |
+| STT | NVIDIA Parakeet TDT 0.6B v3 | Streaming multilingual transcription, including Bulgarian |
+| LLM | LM Studio through OpenAI-compatible chat completions | Local conversation model; Cerebras, Gemini, and BGGPT can be selected when configured |
+| TTS | Qwen3-TTS or Ani Voice API | Selectable local speech output; changing the speech backend reconnects the live session |
+| Visual context | SmolVLM through local `llama-server` | Periodic webcam observations summarized into capped hidden session context |
+| Long-term memory | Docker MCP Memory | Persistent knowledge graph searched in both Bulgarian and English |
+| Tool gateway | Docker MCP gateway | Server-side allowlisted memory, browser, and reasoning tools |
+
+```mermaid
+flowchart LR
+    Browser["Browser UI"] <-->|"Realtime WebSocket"| Speech["Modular S2S backend"]
+    Browser <-->|"Same-origin HTTP API"| UIProxy["FastAPI UI server"]
+    Speech --> STT["Parakeet STT"]
+    Speech --> Router["Per-session LLM router"]
+    Router --> LMStudio["LM Studio local LLM"]
+    Router -. optional .-> Providers["Cerebras / Gemini / BGGPT"]
+    Speech --> TTS["Qwen3-TTS or Ani TTS"]
+    UIProxy -->|"Periodic JPEG frame"| Vision["Local SmolVLM observer"]
+    Vision -->|"Scene observation"| UIProxy
+    Browser -->|"Capped summary in session.update"| Speech
+    UIProxy --> Gateway["Docker MCP gateway"]
+    Gateway --> Memory["Persistent memory graph"]
+```
+
+### Context awareness
+
+- **Conversation context:** the realtime backend keeps the active turn history
+  and tool outputs in the LLM session.
+- **Visual context:** when explicitly enabled, the observer samples webcam
+  frames, sends them to the local SmolVLM service, and injects only a capped
+  rolling scene summary into the effective instructions. Turning the camera off
+  stops all media tracks, disables the observer, clears its summaries, and
+  removes stale visual context from the live session.
+- **Persistent memory:** direct MCP memory tools read and update a durable
+  knowledge graph. Recall requests are expanded into distinct Bulgarian
+  Cyrillic and English searches before results are returned to the LLM.
+- **Explicit snapshots:** `camera_snapshot` is separate from the periodic
+  observer and runs only when the enabled tool is called.
+
+SmolVLM is a **VLM** (vision-language model). It provides the camera context in
+this stack. [vLLM](https://github.com/vllm-project/vllm) is different: it is an
+optional OpenAI-compatible LLM serving engine that can be used instead of LM
+Studio, but it is not required for visual context awareness.
+
+### Quick start
+
+1. Start LM Studio, load a chat model, and enable its local server.
+2. Create a private environment file. The examples contain names and
+   placeholders only, never usable credentials:
+
+   ```bash
+   cp .env.local.example .env
+   # PowerShell: Copy-Item .env.local.example .env
+   ```
+
+3. Start the full local UI with both speech backends and the optional visual
+   observer:
+
+   ```bash
+   docker compose --env-file .env -f docker-compose.local.yml \
+     --profile bgtts-ani --profile vision-observer up -d --build
+   ```
+
+4. Open `http://localhost:7860`. For microphone/camera access from another
+   device, configure the certificate and authenticated HTTPS profile described
+   in [`docs/local-docker-full-stack.md`](docs/local-docker-full-stack.md), then
+   add `--profile lan-https`.
+
+Use only `--profile lmstudio` when you want the Qwen3-TTS stack without the
+second Ani backend. Running both speech backends and SmolVLM simultaneously is
+convenient for live switching but requires substantially more GPU memory.
+
+Docker MCP is optional and starts separately on the host:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\mcp\start-mcp-gateway.ps1
+```
+
+### Credential boundary
+
+- Keep real provider keys, the MCP bearer token, and HTTPS credentials only in
+  `.env`; it is ignored by Git and loaded only into server-side containers.
+- The browser receives provider identifiers, model names, availability, and
+  tool results, but not configured API keys or the MCP gateway token.
+- Local certificates, runtime logs, downloaded model caches, and `.env` files
+  are ignored and must not be committed.
+- Rotate a credential immediately if it was ever committed, even if a later
+  commit deletes it; Git history preserves old blobs.
 
 ## Approach
 
@@ -63,13 +169,22 @@ The pipeline provides a fully open and modular approach, with a focus on leverag
 
 This fork's `main` branch includes the backend, the vendored realtime voice UI
 in `apps/hf-realtime-voice-space/`, local provider routing, Docker MCP gateway
-helpers, and the experimental Ani Bulgarian TTS sidecar.
+helpers, persistent memory integration, the optional SmolVLM observer, and the
+Ani Bulgarian TTS sidecar.
 
-For a production-like local deployment from one clone:
+For the smaller LM Studio + Parakeet + Qwen3-TTS stack:
 
 ```bash
 cp .env.local.example .env
-docker compose -f docker-compose.local.yml --profile lmstudio up --build
+docker compose --env-file .env -f docker-compose.local.yml \
+  --profile lmstudio up -d --build
+```
+
+For both selectable speech backends plus local visual context:
+
+```bash
+docker compose --env-file .env -f docker-compose.local.yml \
+  --profile bgtts-ani --profile vision-observer up -d --build
 ```
 
 See [`docs/local-docker-full-stack.md`](docs/local-docker-full-stack.md) for

@@ -12,6 +12,7 @@ The local production stack is intentionally multi-container:
 - `backend-lmstudio-bgtts`: optional Bulgarian Ani TTS backend on `S2S_BG_PORT`
   (`8766`).
 - `ani-voice-api`: isolated Ani-Voice-API sidecar on `ANI_VOICE_PORT` (`8001`).
+- `smolvlm`: optional local vision-language observer on port `8080`.
 - `ui-https`: optional LAN/internet HTTPS reverse proxy on `UI_HTTPS_PORT`
   (`50056`).
 - Docker MCP gateway: host-side process, not a compose service.
@@ -66,8 +67,12 @@ docker compose -f docker-compose.local.yml --profile lmstudio up -d --build
 Start default backend plus Bulgarian Ani TTS:
 
 ```powershell
-docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-ani up -d --build
+docker compose -f docker-compose.local.yml --profile bgtts-ani up -d --build
 ```
+
+The `bgtts-ani` profile activates both speech backends so the UI can reconnect
+between them without a CLI restart. Use only `--profile lmstudio` when GPU
+memory is tight and the Ani backend is not needed.
 
 Open:
 
@@ -95,7 +100,7 @@ docker run --rm -v "${certDir}:/certs" alpine:latest sh -c "apk add --no-cache o
 Start with LAN HTTPS:
 
 ```powershell
-docker compose -f docker-compose.local.yml --profile lmstudio --profile bgtts-ani --profile lan-https up -d --build
+docker compose -f docker-compose.local.yml --profile bgtts-ani --profile lan-https up -d --build
 ```
 
 Open:
@@ -187,6 +192,10 @@ Useful memory tools:
 - `create_entities`
 - `create_relations`
 - `add_observations`
+
+The UI wrapper requires both a Bulgarian Cyrillic query and an English query
+for each recall, sends two canonical `search_nodes` calls, and returns both
+result sets to the selected LLM.
 
 ## Current Context And Audio Defaults
 

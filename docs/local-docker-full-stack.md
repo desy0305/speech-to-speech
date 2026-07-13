@@ -32,9 +32,10 @@ This repository contains both pieces needed for the local full stack:
    - STT: `nvidia/parakeet-tdt-0.6b-v3`
    - TTS: `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`
 
-6. If you change the API provider, model, backend preset, or URL while connected, click
-   `Restart conversation with these settings`. An already-running conversation
-   keeps the provider/model it started with until it is restarted.
+6. Changing `Speech backend` while connected reconnects the active conversation
+   automatically. Provider, model, and custom URL changes remain pending until
+   you click `Restart conversation with these settings`. An already-running
+   conversation keeps its provider/model until that restart.
 
 The LM Studio profile uses `--llm_backend chat-completions` and `--responses_api_reasoning_effort none`. For the tested Gemma 4 QAT model this is required; otherwise LM Studio may return reasoning-only output with empty speakable content.
 
@@ -147,9 +148,10 @@ New-NetFirewallRule -DisplayName "HF Voice HTTPS 50056 LAN" -Direction Inbound -
 
 ## Runtime Provider Switching
 
-The `lmstudio` Docker profile now runs one speech stack and switches only the
-LLM route per realtime session. This avoids loading Parakeet STT and Qwen3-TTS
-multiple times.
+The `lmstudio` Docker profile runs one speech stack and switches only the LLM
+route per realtime session. This avoids duplicating Parakeet STT and Qwen3-TTS
+when you switch among LM Studio, Cerebras, Gemini, and BGGPT. The separate Ani
+speech backend is different and has its own STT/TTS process.
 
 Configured providers:
 
@@ -185,8 +187,10 @@ This keeps the same local STT/TTS backend and routes only the LLM call through H
 ## Experimental Bulgarian TTS
 
 The `bgtts-ani` profile starts a separate backend on `S2S_BG_PORT` (`8766` by
-default) and an isolated Ani-Voice-API sidecar. The default `lmstudio` profile
-still uses qwen3 TTS on `S2S_PORT` (`8765`).
+default), an isolated Ani-Voice-API sidecar, and the plain LM Studio/Qwen3-TTS
+backend on `S2S_PORT` (`8765`). Keeping both backends online makes the UI speech
+selector live-switchable, but it loads two audio stacks. Use only the
+`lmstudio` profile when GPU memory is tight.
 
 ```bash
 docker compose -f docker-compose.local.yml --profile bgtts-ani up --build
@@ -220,10 +224,10 @@ Hugging Face download limits require it.
   `SERPER_API_KEY` remains supported as a fallback with `SEARCH_PROVIDER=serper`.
 - Not required for local public default models: `OPENAI_API_KEY`.
 
-The provided Tavily and Serper keys currently return `401/403 Unauthorized`;
-the UI returns that as a normal tool result now, but web search will not work
-until the provider accepts the key. You can also turn off Web Search in the
-Tools modal.
+The example environment files intentionally leave Tavily and Serper keys blank.
+If a configured provider returns `401/403`, verify the private value in your
+local `.env`; the UI returns the provider failure as a normal tool result. You
+can also turn off Web Search in the Tools modal.
 
 ## Docker MCP
 
@@ -291,10 +295,10 @@ assistant Docker MCP discovery/profile tools plus basic Playwright browsing
 controls. Memory tools are exposed twice on purpose: as direct first-class tools
 (`search_nodes`, `open_nodes`, `create_entities`, `add_observations`,
 `create_relations`) for reliable local-model use, and through the generic
-`mcp_call` wrapper for ordered batches such as write-then-verify. Bulgarian
-memory recall should search both Cyrillic and Latin/transliterated forms before
-concluding no memory exists. `browser_run_code_unsafe`, arbitrary evaluate, file
-upload, and drop tools are intentionally not allowlisted.
+`mcp_call` wrapper for ordered batches such as write-then-verify. Each memory
+recall is expanded into distinct Bulgarian Cyrillic and English searches before
+results return to the model. `browser_run_code_unsafe`, arbitrary evaluate,
+file upload, and drop tools are intentionally not allowlisted.
 
 ## VRAM Notes
 

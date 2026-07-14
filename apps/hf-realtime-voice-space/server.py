@@ -209,8 +209,8 @@ WAKE_WORD_ENABLED = os.environ.get("WAKE_WORD_ENABLED", "0").strip().lower() in 
 WAKE_WORD_BASE_URL = os.environ.get("WAKE_WORD_BASE_URL", "http://wake-word:8081").strip()
 WAKE_WORD_PHRASE = " ".join(os.environ.get("WAKE_WORD_PHRASE", "HEY EVA").split()) or "HEY EVA"
 WAKE_WORD_FOLLOWUP_S = _bounded_int_env("WAKE_WORD_FOLLOWUP_S", 20, 5, 120)
-WAKE_WORD_SCORE = _bounded_float_env("WAKE_WORD_SCORE", 1.5, 0.0, 10.0)
-WAKE_WORD_THRESHOLD = _bounded_float_env("WAKE_WORD_THRESHOLD", 0.25, 0.01, 0.99)
+WAKE_WORD_SCORE = _bounded_float_env("WAKE_WORD_SCORE", 2.0, 0.0, 10.0)
+WAKE_WORD_THRESHOLD = _bounded_float_env("WAKE_WORD_THRESHOLD", 0.15, 0.01, 0.99)
 WAKE_WORD_REQUIRE_LOCAL = os.environ.get("WAKE_WORD_REQUIRE_LOCAL", "1").strip().lower() not in {
     "0",
     "false",

@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=memory-tools-20260706" />
+    <link rel="stylesheet" href="style.css?v=wake-office-20260714" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -133,6 +133,11 @@
 
         <p id="circle-caption" class="circle-caption" role="status">Tap to start</p>
         <p id="circle-subcaption" class="circle-subcaption" hidden></p>
+        <div id="wake-control" class="wake-control" hidden aria-live="polite">
+          <span id="wake-status-dot" class="wake-status-dot" aria-hidden="true"></span>
+          <span id="wake-status">Off</span>
+          <button id="wake-sleep-btn" class="wake-sleep-btn" type="button" hidden>Sleep</button>
+        </div>
 
         <div id="queue-actions" class="queue-actions" hidden>
           <button id="join-queue-btn" class="join-queue-btn" type="button" hidden>
@@ -474,7 +479,54 @@
             </label>
           </div>
           <small id="tool-mcp-hint" class="tool-hint">MCP access is routed server-side.</small>
+
+          <div class="tool-row tool-row-sep" id="tool-wake-row">
+            <div class="tool-info">
+              <span class="tool-name">Wake word</span>
+              <span class="tool-desc">Keep speech private until you say Hey Eva.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-wake" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <small id="tool-wake-hint" class="tool-hint">Disabled until the local wake-word sidecar is configured.</small>
+
+          <div class="tool-row tool-row-sep" id="tool-office-row">
+            <div class="tool-info">
+              <span class="tool-name">Local Office agent</span>
+              <span class="tool-desc">Inspect documents locally and approve every change.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-office" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <small id="tool-office-hint" class="tool-hint">Disabled until the isolated Office agent is configured.</small>
         </form>
+      </div>
+    </dialog>
+
+    <dialog id="office-approval-modal" class="modal office-approval-modal">
+      <div class="modal-content">
+        <header class="modal-header">
+          <h2>Approve document change</h2>
+        </header>
+        <dl class="office-approval-details">
+          <div>
+            <dt>File</dt>
+            <dd id="office-approval-path">-</dd>
+          </div>
+          <div>
+            <dt>Operation</dt>
+            <dd id="office-approval-operation">-</dd>
+          </div>
+        </dl>
+        <p id="office-approval-note" class="office-approval-note">This one-time approval expires in 60 seconds.</p>
+        <footer class="modal-footer">
+          <button id="office-approval-reject" type="button" class="btn">Reject</button>
+          <button id="office-approval-accept" type="button" class="btn primary">Approve once</button>
+        </footer>
       </div>
     </dialog>
 
@@ -496,6 +548,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="main.js?v=memory-bilingual-20260710"></script>
+    <script type="module" src="main.js?v=wake-office-20260714"></script>
   </body>
 </html>

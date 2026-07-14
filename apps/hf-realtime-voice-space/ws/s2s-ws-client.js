@@ -66,6 +66,9 @@
  *   executes and replies via `sendToolOutput` + `requestResponse`.
  * @property {NoiseGate} [noiseGate] Client-side noise gate applied to the mic
  *   before it's sent. Tunable live via `setNoiseGate`.
+ * @property {(pcm16: ArrayBuffer) => boolean} [micChunkRouter] Optional
+ *   synchronous routing hook. Return false to consume a mic chunk before it is
+ *   encoded or sent to the S2S socket. Omitted means normal passthrough.
  *
  * @typedef {Object} NoiseGate
  * @property {boolean} enabled
@@ -624,6 +627,17 @@ export class S2sWsRealtimeClient extends EventTarget {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     if (!this._sessionConfigured) return; // Server rejects audio before session.update.
     if (this._muted) return;
+    if (this.options.micChunkRouter) {
+      try {
+        if (this.options.micChunkRouter(pcm16Buffer) === false) return;
+      } catch (err) {
+        // A privacy gate must fail closed. The app can keep the conversation
+        // connected and offer its manual wake control without leaking audio.
+        console.error("[ws] mic chunk router failed", err);
+        this.dispatchEvent(new CustomEvent("mic-router-error", { detail: { error: err } }));
+        return;
+      }
+    }
     const b64 = base64FromArrayBuffer(pcm16Buffer);
     this._send({ type: "input_audio_buffer.append", audio: b64 });
   }
@@ -1166,6 +1180,27 @@ export class S2sWsRealtimeClient extends EventTarget {
   setNoiseGate(gate) {
     this._noiseGate = gate;
     this._captureNode?.port.postMessage({ kind: "gate", ...gate });
+  }
+
+  /** Play a short local acknowledgement without involving the model or TTS. */
+  playWakeAcknowledgement() {
+    const ctx = this._ctx;
+    if (!ctx || ctx.state === "closed") return;
+    try {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const now = ctx.currentTime;
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(660, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+      oscillator.connect(gain).connect(ctx.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.13);
+    } catch {
+      // Notification audio is optional; wake routing remains authoritative.
+    }
   }
 
   /** @param {Record<string, unknown>} event */

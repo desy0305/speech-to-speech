@@ -230,4 +230,7 @@ cover/
 .tox/
 uv.lock
 .local-https/
+.playwright-cli/
 cache/
+agent-workspace/*
+!agent-workspace/README.md

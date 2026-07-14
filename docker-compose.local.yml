@@ -79,6 +79,22 @@ services:
       SMOLVLM_REQUIRE_LOCAL: ${SMOLVLM_REQUIRE_LOCAL:-1}
       VISION_OBSERVER_INTERVAL_MS: ${VISION_OBSERVER_INTERVAL_MS:-2000}
       VISION_OBSERVER_MAX_CONTEXT_CHARS: ${VISION_OBSERVER_MAX_CONTEXT_CHARS:-1200}
+      WAKE_WORD_ENABLED: ${WAKE_WORD_ENABLED:-0}
+      WAKE_WORD_BASE_URL: ${WAKE_WORD_BASE_URL:-http://wake-word:8081}
+      WAKE_WORD_PHRASE: ${WAKE_WORD_PHRASE:-HEY EVA}
+      WAKE_WORD_FOLLOWUP_S: ${WAKE_WORD_FOLLOWUP_S:-20}
+      WAKE_WORD_SCORE: ${WAKE_WORD_SCORE:-1.5}
+      WAKE_WORD_THRESHOLD: ${WAKE_WORD_THRESHOLD:-0.25}
+      WAKE_WORD_REQUIRE_LOCAL: ${WAKE_WORD_REQUIRE_LOCAL:-1}
+      OFFICE_AGENT_ENABLED: ${OFFICE_AGENT_ENABLED:-0}
+      OFFICE_AGENT_BASE_URL: ${OFFICE_AGENT_BASE_URL:-http://office-agent:8082}
+      OFFICE_AGENT_TOKEN: ${OFFICE_AGENT_TOKEN:-}
+      OFFICE_AGENT_REQUIRE_LOCAL: ${OFFICE_AGENT_REQUIRE_LOCAL:-1}
+      OFFICE_AGENT_REQUIRE_LOCAL_LLM: ${OFFICE_AGENT_REQUIRE_LOCAL_LLM:-1}
+      OFFICE_AGENT_LOCAL_LLM_PROVIDERS: ${OFFICE_AGENT_LOCAL_LLM_PROVIDERS:-lmstudio}
+      OFFICE_AGENT_TIMEOUT_S: ${OFFICE_AGENT_TIMEOUT_S:-35}
+      OFFICE_AGENT_MAX_RESPONSE_BYTES: ${OFFICE_AGENT_MAX_RESPONSE_BYTES:-1048576}
+      OFFICE_AGENT_MAX_ARTIFACT_BYTES: ${OFFICE_AGENT_MAX_ARTIFACT_BYTES:-15728640}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
       HF_TOKEN: ${HF_TOKEN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -129,6 +145,9 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "${UI_PORT:-7860}:7860"
+    networks:
+      - default
+      - agent-internal
     restart: unless-stopped
 
   ui-https:
@@ -509,3 +528,80 @@ services:
         condition: service_healthy
     gpus: all
     restart: unless-stopped
+
+  wake-word:
+    profiles: ["wake-word"]
+    image: ${WAKE_WORD_IMAGE:-hf-realtime-voice-wake-word:1.13.4}
+    build:
+      context: ./deploy/wake-word
+      args:
+        MODEL_URL: ${WAKE_WORD_MODEL_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2}
+        MODEL_SHA256: ${WAKE_WORD_MODEL_SHA256:-f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a}
+    environment:
+      WAKE_WORD_PHRASE: ${WAKE_WORD_PHRASE:-HEY EVA}
+      WAKE_WORD_SCORE: ${WAKE_WORD_SCORE:-1.5}
+      WAKE_WORD_THRESHOLD: ${WAKE_WORD_THRESHOLD:-0.25}
+      WAKE_WORD_NUM_THREADS: ${WAKE_WORD_NUM_THREADS:-1}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    pids_limit: 64
+    cpus: 1.0
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3))['ready']"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - agent-internal
+    restart: unless-stopped
+
+  office-agent:
+    profiles: ["office-agent"]
+    image: ${OFFICE_AGENT_IMAGE:-hf-realtime-voice-office-agent:1.0.135}
+    build:
+      context: ./deploy/office-agent
+      args:
+        OFFICECLI_VERSION: ${OFFICECLI_VERSION:-1.0.135}
+        CHECKSUMS_SHA256: ${OFFICECLI_SHA256SUMS_SHA256:-9a991e1db05c6c6896c6747c76d833735f0b907648cb1a416f80f1840999a3d5}
+        OFFICECLI_AMD64_SHA256: ${OFFICECLI_LINUX_X64_SHA256:-00028af3db48678fc9ff6c8f9e70fa4c150dcee2b43ed85254afc8f4a48e13eb}
+        OFFICECLI_ARM64_SHA256: ${OFFICECLI_LINUX_ARM64_SHA256:-2ec0d5a455646647f798f723e62fd9c18e2e801f8460d4401d2554a6a1c6d5b0}
+    environment:
+      OFFICECLI_SKIP_UPDATE: "1"
+      OFFICE_AGENT_TOKEN: ${OFFICE_AGENT_TOKEN:-}
+      OFFICE_AGENT_TIMEOUT_S: ${OFFICE_AGENT_TIMEOUT_S:-30}
+      OFFICE_AGENT_INTENT_TTL_S: ${OFFICE_AGENT_INTENT_TTL_S:-60}
+      OFFICE_AGENT_MAX_OUTPUT_BYTES: ${OFFICE_AGENT_MAX_OUTPUT_BYTES:-65536}
+      OFFICE_AGENT_MAX_ARTIFACT_BYTES: ${OFFICE_AGENT_MAX_ARTIFACT_BYTES:-15728640}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+      - /dev/shm:rw,nosuid,nodev,size=256m
+    pids_limit: 128
+    cpus: 2.0
+    mem_limit: 2g
+    volumes:
+      - ${OFFICE_AGENT_WORKSPACE:-./agent-workspace}:/workspace:rw
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3))['ready']"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - agent-internal
+    restart: unless-stopped
+
+networks:
+  agent-internal:
+    internal: true

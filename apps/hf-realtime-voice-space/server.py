@@ -42,6 +42,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 from urllib.parse import urlsplit, urlunsplit
 
@@ -198,6 +199,58 @@ VISION_OBSERVER_LOG_PREVIEW = os.environ.get("VISION_OBSERVER_LOG_PREVIEW", "").
     "on",
     "enabled",
 }
+WAKE_WORD_ENABLED = os.environ.get("WAKE_WORD_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+}
+WAKE_WORD_BASE_URL = os.environ.get("WAKE_WORD_BASE_URL", "http://wake-word:8081").strip()
+WAKE_WORD_PHRASE = " ".join(os.environ.get("WAKE_WORD_PHRASE", "HEY EVA").split()) or "HEY EVA"
+WAKE_WORD_FOLLOWUP_S = _bounded_int_env("WAKE_WORD_FOLLOWUP_S", 20, 5, 120)
+WAKE_WORD_SCORE = _bounded_float_env("WAKE_WORD_SCORE", 1.5, 0.0, 10.0)
+WAKE_WORD_THRESHOLD = _bounded_float_env("WAKE_WORD_THRESHOLD", 0.25, 0.01, 0.99)
+WAKE_WORD_REQUIRE_LOCAL = os.environ.get("WAKE_WORD_REQUIRE_LOCAL", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+WAKE_WORD_TIMEOUT_S = _bounded_float_env("WAKE_WORD_TIMEOUT_S", 3.0, 0.5, 15.0)
+WAKE_WORD_WS_MAX_BYTES = _bounded_int_env("WAKE_WORD_WS_MAX_BYTES", 128 * 1024, 4096, 1024 * 1024)
+OFFICE_AGENT_ENABLED = os.environ.get("OFFICE_AGENT_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+}
+OFFICE_AGENT_BASE_URL = os.environ.get("OFFICE_AGENT_BASE_URL", "http://office-agent:8082").strip()
+OFFICE_AGENT_TOKEN = os.environ.get("OFFICE_AGENT_TOKEN", "").strip()
+OFFICE_AGENT_REQUIRE_LOCAL = os.environ.get("OFFICE_AGENT_REQUIRE_LOCAL", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+OFFICE_AGENT_REQUIRE_LOCAL_LLM = os.environ.get("OFFICE_AGENT_REQUIRE_LOCAL_LLM", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+OFFICE_AGENT_LOCAL_LLM_PROVIDERS = {
+    item.strip().lower()
+    for item in os.environ.get("OFFICE_AGENT_LOCAL_LLM_PROVIDERS", "lmstudio").split(",")
+    if item.strip()
+}
+OFFICE_AGENT_TIMEOUT_S = _bounded_float_env("OFFICE_AGENT_TIMEOUT_S", 35.0, 5.0, 120.0)
+OFFICE_AGENT_MAX_REQUEST_BYTES = _bounded_int_env("OFFICE_AGENT_MAX_REQUEST_BYTES", 32 * 1024, 1024, 256 * 1024)
+OFFICE_AGENT_MAX_RESPONSE_BYTES = _bounded_int_env("OFFICE_AGENT_MAX_RESPONSE_BYTES", 1024 * 1024, 16 * 1024, 16 * 1024 * 1024)
+OFFICE_AGENT_MAX_ARTIFACT_BYTES = _bounded_int_env(
+    "OFFICE_AGENT_MAX_ARTIFACT_BYTES", 15 * 1024 * 1024, 1024 * 1024, 50 * 1024 * 1024
+)
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -350,7 +403,7 @@ def _is_localish_host(host: str) -> bool:
     clean = (host or "").strip().strip("[]").lower()
     if not clean:
         return False
-    if clean in {"localhost", "host.docker.internal", "smolvlm"} or clean.endswith(".local"):
+    if clean in {"localhost", "host.docker.internal", "smolvlm", "wake-word", "office-agent"} or clean.endswith(".local"):
         return True
     try:
         ip = ipaddress.ip_address(clean)
@@ -410,6 +463,60 @@ def _smolvlm_chat_url() -> str:
 
 def _smolvlm_models_url() -> str:
     return f"{_smolvlm_base_url()}/v1/models"
+
+
+def _wake_word_base_url() -> str:
+    return WAKE_WORD_BASE_URL.rstrip("/")
+
+
+def _wake_word_url_error() -> str:
+    if not WAKE_WORD_ENABLED:
+        return ""
+    base_url = _wake_word_base_url()
+    if not base_url:
+        return "Wake word is enabled but WAKE_WORD_BASE_URL is empty."
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        return "WAKE_WORD_BASE_URL must be an http(s) or ws(s) URL."
+    if WAKE_WORD_REQUIRE_LOCAL and not _is_localish_host(parsed.hostname or ""):
+        return "WAKE_WORD_BASE_URL must point to a local Docker service or private address."
+    return ""
+
+
+def _wake_word_health_url() -> str:
+    parsed = urlsplit(_wake_word_base_url())
+    scheme = "https" if parsed.scheme in {"https", "wss"} else "http"
+    return urlunsplit((scheme, parsed.netloc, f"{parsed.path.rstrip('/')}/health", "", ""))
+
+
+def _wake_word_ws_url() -> str:
+    parsed = urlsplit(_wake_word_base_url())
+    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+    return urlunsplit((scheme, parsed.netloc, f"{parsed.path.rstrip('/')}/v1/detect", "", ""))
+
+
+def _office_agent_base_url() -> str:
+    return OFFICE_AGENT_BASE_URL.rstrip("/")
+
+
+def _office_agent_url_error() -> str:
+    if not OFFICE_AGENT_ENABLED:
+        return ""
+    base_url = _office_agent_base_url()
+    if not base_url:
+        return "Office agent is enabled but OFFICE_AGENT_BASE_URL is empty."
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "OFFICE_AGENT_BASE_URL must be an http(s) URL."
+    if OFFICE_AGENT_REQUIRE_LOCAL and not _is_localish_host(parsed.hostname or ""):
+        return "OFFICE_AGENT_BASE_URL must point to a local Docker service or private address."
+    if not OFFICE_AGENT_TOKEN:
+        return "Office agent is enabled but OFFICE_AGENT_TOKEN is empty."
+    return ""
+
+
+def _office_agent_headers() -> dict[str, str]:
+    return {"X-Office-Agent-Token": OFFICE_AGENT_TOKEN}
 
 
 def _qwen_omni_models_url() -> str:
@@ -961,6 +1068,308 @@ async def vision_observer_analyze(req: VisionAnalyzeRequest):
             len(clipped),
         )
     return {"observation": clipped, "model": SMOLVLM_MODEL}
+
+
+@app.get("/api/wake-word/config")
+async def wake_word_config():
+    """Secret-free readiness for the optional local keyword spotter."""
+    error = _wake_word_url_error()
+    enabled = WAKE_WORD_ENABLED and not bool(error)
+    healthy = False
+    status = "disabled"
+    message = "Wake word is disabled."
+    if WAKE_WORD_ENABLED and error:
+        status = "invalid_config"
+        message = error
+    elif enabled:
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(WAKE_WORD_TIMEOUT_S, connect=min(WAKE_WORD_TIMEOUT_S, 2.0))
+            ) as http:
+                response = await http.get(_wake_word_health_url())
+            data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            healthy = 200 <= response.status_code < 300 and bool(data.get("ready"))
+            status = "ready" if healthy else "offline"
+            message = "Wake word is ready." if healthy else str(data.get("detail") or "Wake detector is not ready.")[:300]
+        except (httpx.RequestError, ValueError) as exc:
+            status = "offline"
+            message = f"Wake detector is unreachable: {_safe_detail(exc) or exc.__class__.__name__}"
+    return {
+        "enabled": enabled,
+        "configured": enabled,
+        "healthy": healthy,
+        "status": status,
+        "message": message,
+        "phrase": WAKE_WORD_PHRASE.title(),
+        "followupMs": WAKE_WORD_FOLLOWUP_S * 1000,
+        "sampleRate": 16000,
+        "score": WAKE_WORD_SCORE,
+        "threshold": WAKE_WORD_THRESHOLD,
+    }
+
+
+def _websocket_origin_allowed(websocket: WebSocket) -> bool:
+    origin = (websocket.headers.get("origin") or "").rstrip("/")
+    if not origin:
+        return True
+    forwarded_proto = (websocket.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    if forwarded_proto:
+        scheme = forwarded_proto
+    else:
+        scheme = "https" if websocket.url.scheme == "wss" else "http"
+    host = (
+        websocket.headers.get("x-forwarded-host")
+        or websocket.headers.get("host")
+        or websocket.url.netloc
+        or ""
+    ).split(",")[0].strip()
+    return bool(host) and secrets.compare_digest(origin, f"{scheme}://{host}".rstrip("/"))
+
+
+@app.websocket("/api/wake-word/stream")
+async def wake_word_stream(websocket: WebSocket):
+    """Same-origin binary PCM proxy to the internal keyword-spotting sidecar."""
+    await websocket.accept()
+    if not _websocket_origin_allowed(websocket):
+        await websocket.send_json({"type": "error", "code": "origin_rejected", "message": "WebSocket origin rejected."})
+        await websocket.close(code=1008)
+        return
+    error = _wake_word_url_error()
+    if not WAKE_WORD_ENABLED or error:
+        await websocket.send_json(
+            {"type": "error", "code": "not_configured", "message": error or "Wake word is disabled."}
+        )
+        await websocket.close(code=1008)
+        return
+
+    try:
+        async with websockets.connect(
+            _wake_word_ws_url(),
+            open_timeout=WAKE_WORD_TIMEOUT_S,
+            close_timeout=1.0,
+            max_size=WAKE_WORD_WS_MAX_BYTES,
+        ) as upstream:
+            await websocket.send_json({"type": "proxy.ready", "phrase": WAKE_WORD_PHRASE.title()})
+
+            async def browser_to_detector() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        break
+                    data = message.get("bytes")
+                    if data is None or not data or len(data) > WAKE_WORD_WS_MAX_BYTES or len(data) % 2:
+                        await websocket.send_json(
+                            {"type": "error", "code": "invalid_frame", "message": "Wake audio must be an even PCM16 binary frame."}
+                        )
+                        continue
+                    await upstream.send(data)
+
+            async def detector_to_browser() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            done, pending = await asyncio.wait(
+                {
+                    asyncio.create_task(browser_to_detector()),
+                    asyncio.create_task(detector_to_browser()),
+                },
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        logger.warning("wake word upstream failed: %s", exc.__class__.__name__)
+        try:
+            await websocket.send_json(
+                {"type": "error", "code": "upstream_unavailable", "message": "Local wake detector is unavailable."}
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+async def _office_agent_health() -> tuple[bool, str, str]:
+    error = _office_agent_url_error()
+    if error:
+        return False, "invalid_config", error
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(min(OFFICE_AGENT_TIMEOUT_S, 4.0), connect=2.0)
+        ) as http:
+            response = await http.get(f"{_office_agent_base_url()}/health")
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        healthy = 200 <= response.status_code < 300 and bool(data.get("ready"))
+        return (
+            healthy,
+            "ready" if healthy else "offline",
+            "Office agent is ready." if healthy else str(data.get("detail") or "Office agent is not ready.")[:300],
+        )
+    except (httpx.RequestError, ValueError) as exc:
+        return False, "offline", f"Office agent is unreachable: {_safe_detail(exc) or exc.__class__.__name__}"
+
+
+@app.get("/api/office-agent/config")
+async def office_agent_config():
+    if not OFFICE_AGENT_ENABLED:
+        return {
+            "enabled": False,
+            "configured": False,
+            "healthy": False,
+            "status": "disabled",
+            "message": "Office agent is disabled.",
+            "localLlmOnly": OFFICE_AGENT_REQUIRE_LOCAL_LLM,
+            "localLlmProviders": sorted(OFFICE_AGENT_LOCAL_LLM_PROVIDERS),
+        }
+    healthy, status, message = await _office_agent_health()
+    return {
+        "enabled": True,
+        "configured": not bool(_office_agent_url_error()),
+        "healthy": healthy,
+        "status": status,
+        "message": message,
+        "localLlmOnly": OFFICE_AGENT_REQUIRE_LOCAL_LLM,
+        "localLlmProviders": sorted(OFFICE_AGENT_LOCAL_LLM_PROVIDERS),
+        "writeApprovalRequired": True,
+        "maxToolRounds": 6,
+        "maxMutations": 2,
+        "maxTurnMs": 120000,
+        "approvalTtlMs": 60000,
+    }
+
+
+async def _bounded_json_body(request: Request) -> dict[str, object]:
+    if not request.headers.get("content-type", "").lower().startswith("application/json"):
+        raise HTTPException(status_code=415, detail="Office agent requests must use application/json.")
+    body = await request.body()
+    if not body or len(body) > OFFICE_AGENT_MAX_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail="Office agent request is empty or too large.")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Office agent request must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Office agent request must be a JSON object.")
+    return payload
+
+
+def _require_same_origin(request: Request) -> None:
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    expected = _external_origin(request).rstrip("/")
+    if origin and (not expected or not secrets.compare_digest(origin, expected)):
+        raise HTTPException(status_code=403, detail="Cross-origin Office mutation rejected.")
+
+
+async def _office_agent_post(endpoint: str, payload: dict[str, object]) -> dict[str, object]:
+    error = _office_agent_url_error()
+    if not OFFICE_AGENT_ENABLED:
+        raise HTTPException(status_code=503, detail="Office agent is disabled.")
+    if error:
+        raise HTTPException(status_code=503, detail=error)
+    try:
+        async with httpx.AsyncClient(timeout=OFFICE_AGENT_TIMEOUT_S) as http:
+            response = await http.post(
+                f"{_office_agent_base_url()}/v1/{endpoint}",
+                json=payload,
+                headers=_office_agent_headers(),
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Local Office agent is unreachable.") from exc
+    if len(response.content) > OFFICE_AGENT_MAX_RESPONSE_BYTES:
+        raise HTTPException(status_code=502, detail="Office agent response exceeded the configured limit.")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Office agent returned non-JSON output.") from exc
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else None
+        status_code = response.status_code if response.status_code in {400, 403, 404, 409, 410, 413, 422} else 502
+        raise HTTPException(status_code=status_code, detail=str(detail or "Office agent request failed.")[:800])
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Office agent returned an invalid response.")
+    return data
+
+
+@app.post("/api/office-agent/list")
+async def office_agent_list(request: Request):
+    return await _office_agent_post("list", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/inspect")
+async def office_agent_inspect(request: Request):
+    return await _office_agent_post("inspect", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/render")
+async def office_agent_render(request: Request):
+    return await _office_agent_post("render", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/validate")
+async def office_agent_validate(request: Request):
+    return await _office_agent_post("validate", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/prepare")
+async def office_agent_prepare(request: Request):
+    _require_same_origin(request)
+    return await _office_agent_post("prepare", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/execute")
+async def office_agent_execute(request: Request):
+    _require_same_origin(request)
+    return await _office_agent_post("execute", await _bounded_json_body(request))
+
+
+@app.post("/api/office-agent/cancel")
+async def office_agent_cancel(request: Request):
+    _require_same_origin(request)
+    return await _office_agent_post("cancel", await _bounded_json_body(request))
+
+
+@app.get("/api/office-agent/artifacts/{artifact_id}")
+async def office_agent_artifact(artifact_id: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", artifact_id):
+        raise HTTPException(status_code=404, detail="Office artifact was not found.")
+    error = _office_agent_url_error()
+    if not OFFICE_AGENT_ENABLED or error:
+        raise HTTPException(status_code=503, detail=error or "Office agent is disabled.")
+    try:
+        async with httpx.AsyncClient(timeout=OFFICE_AGENT_TIMEOUT_S) as http:
+            response = await http.get(
+                f"{_office_agent_base_url()}/v1/artifacts/{artifact_id}",
+                headers=_office_agent_headers(),
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Local Office artifact service is unreachable.") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=404 if response.status_code == 404 else 502, detail="Office artifact was not found.")
+    if not response.content or len(response.content) > OFFICE_AGENT_MAX_ARTIFACT_BYTES:
+        raise HTTPException(status_code=502, detail="Office artifact is empty or too large.")
+    media_type = response.headers.get("content-type", "application/octet-stream").split(";", 1)[0]
+    if media_type not in {"text/html", "image/png"}:
+        media_type = "application/octet-stream"
+    suffix = ".html" if media_type == "text/html" else ".png" if media_type == "image/png" else ".bin"
+    return Response(
+        content=response.content,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="office-artifact-{artifact_id[:8]}{suffix}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/api/qwen-omni/config")

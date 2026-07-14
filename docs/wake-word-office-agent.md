@@ -45,9 +45,9 @@ Configuration:
 WAKE_WORD_ENABLED=0
 WAKE_WORD_BASE_URL=http://wake-word:8081
 WAKE_WORD_PHRASE=HEY EVA
-WAKE_WORD_SCORE=2.0
-WAKE_WORD_THRESHOLD=0.15
-WAKE_WORD_FOLLOWUP_S=20
+WAKE_WORD_SCORE=2.5
+WAKE_WORD_THRESHOLD=0.10
+WAKE_WORD_FOLLOWUP_S=60
 WAKE_WORD_NUM_THREADS=1
 WAKE_WORD_REQUIRE_LOCAL=1
 ```
@@ -61,7 +61,7 @@ docker compose --env-file .env -f docker-compose.local.yml --profile wake-word u
 The UI states are `Off`, `Sleeping`, `Heard Hey Eva`, `Awake`, and
 `Unavailable`. Sleeping PCM goes only to keyword spotting. After detection, a
 short local acknowledgement plays and subsequent PCM enters the existing S2S
-socket. The session stays awake for 20 seconds after the latest completed user,
+socket. The session stays awake for 60 seconds after the latest completed user,
 assistant, or tool turn and never sleeps during an active response. The visible
 Sleep control immediately blocks S2S audio. If KWS disconnects, the gate fails
 closed; pressing the main orb permits one manual turn.

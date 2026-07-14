@@ -63,6 +63,26 @@ test("default browser-style timer wrappers connect without an illegal receiver",
   controller.disconnect();
 });
 
+test("wake follow-up defaults to 60 seconds and pauses while busy", async () => {
+  const socket = new FakeSocket();
+  const scheduler = fakeScheduler();
+  const controller = new WakeWordController({
+    socketFactory: () => socket,
+    urlFactory: () => "ws://local.test/api/wake-word/stream",
+    ...scheduler,
+  });
+  controller.configure({ selected: true, configured: true, healthy: true });
+  const connected = controller.connect();
+  socket.message({ type: "ready", phrase: "Hey Eva" });
+  assert.equal(await connected, true);
+  controller.manualWake();
+  assert.equal(scheduler.hasDelay(60_000), true);
+  controller.setBusy(true);
+  assert.equal(scheduler.hasDelay(60_000), false);
+  controller.setBusy(false);
+  assert.equal(scheduler.hasDelay(60_000), true);
+});
+
 test("sleeping PCM goes only to the detector, then passes after detection", async () => {
   const socket = new FakeSocket();
   const scheduler = fakeScheduler();
@@ -125,6 +145,38 @@ test("S2S mic router consumes sleeping audio before encoding or send", () => {
   client._send = () => { sends += 1; };
   client._onMicChunk(new ArrayBuffer(32));
   assert.equal(sends, 0);
+});
+
+test("wake-relevant client status stays busy until queued speaker audio drains", async () => {
+  const client = new S2sWsRealtimeClient({ directUrl: "ws://local.test/v1/realtime" });
+  client._status = "ai-speaking";
+  client._openResponses = 1;
+  client._playbackActive = true;
+
+  await client._onWsMessage(JSON.stringify({
+    type: "response.done",
+    response: { id: "resp_1", status: "completed" },
+  }));
+  assert.equal(client.status, "ai-speaking");
+  assert.equal(client._responseDoneWaitingForPlayback, true);
+
+  client._onPlaybackMessage({ kind: "underrun" });
+  assert.equal(client.status, "connected");
+  assert.equal(client._responseDoneWaitingForPlayback, false);
+});
+
+test("cancelled old response does not release wake while new user speech is active", async () => {
+  const client = new S2sWsRealtimeClient({ directUrl: "ws://local.test/v1/realtime" });
+  client._status = "ai-speaking";
+  client._openResponses = 1;
+  client._playbackActive = true;
+
+  await client._onWsMessage(JSON.stringify({ type: "input_audio_buffer.speech_started" }));
+  await client._onWsMessage(JSON.stringify({
+    type: "response.done",
+    response: { id: "resp_old", status: "cancelled" },
+  }));
+  assert.equal(client.status, "user-speaking");
 });
 
 test("HTTPS proxy preserves the wake word WebSocket upgrade", () => {

@@ -24,8 +24,8 @@ THREADS = max(
     1,
     min(4, int(os.environ.get("WAKE_WORD_NUM_THREADS", os.environ.get("WAKE_WORD_THREADS", "1")))),
 )
-SCORE = max(0.0, min(10.0, float(os.environ.get("WAKE_WORD_SCORE", "2.0"))))
-THRESHOLD = max(0.01, min(0.99, float(os.environ.get("WAKE_WORD_THRESHOLD", "0.15"))))
+SCORE = max(0.0, min(10.0, float(os.environ.get("WAKE_WORD_SCORE", "2.5"))))
+THRESHOLD = max(0.01, min(0.99, float(os.environ.get("WAKE_WORD_THRESHOLD", "0.10"))))
 
 ENCODER = MODEL_DIR / "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
 DECODER = MODEL_DIR / "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"

@@ -22,11 +22,11 @@
  * @typedef {"idle" | "disabled" | "offline" | "waiting-camera" | "waiting-frame" | "reading" | "live" | "error"} VisionObserverState
  */
 
-import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js?v=chat-composer-20260706";
+import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js?v=wake-stability-20260714";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js?v=chat-composer-20260706";
 import { Account } from "./ui/account.js";
-import { WakeWordController } from "./ui/wake-word.js?v=wake-office-20260714";
+import { WakeWordController } from "./ui/wake-word.js?v=wake-stability-20260714";
 
 const DEFAULT_VOICE = "Aiden";
 const DEFAULT_INSTRUCTIONS =
@@ -840,9 +840,11 @@ let wakeConfig = {
   status: "disabled",
   message: "Wake word is disabled.",
   phrase: "Hey Eva",
-  followupMs: 20_000,
+  followupMs: 60_000,
 };
 const wakeController = new WakeWordController();
+const wakeBusyReasons = new Set();
+let wakeToolSequence = 0;
 let wakeLastError = "";
 let officeConfig = {
   enabled: false,
@@ -1011,6 +1013,31 @@ function configureWakeController() {
   });
 }
 
+function setWakeBusy(reason, busy) {
+  if (busy) wakeBusyReasons.add(reason);
+  else wakeBusyReasons.delete(reason);
+  wakeController.setBusy(wakeBusyReasons.size > 0);
+}
+
+function resetWakeBusy() {
+  wakeBusyReasons.clear();
+  wakeController.setBusy(false);
+}
+
+function handleRealtimeServerError(detail) {
+  const raw = detail.error instanceof Error ? detail.error.message : String(detail.error || "Server error");
+  console.warn("[main] server error (non-fatal):", raw);
+  const providerBusy = /\b429\b|queue_exceeded|rate.?limit|high traffic|too many requests/i.test(raw);
+  const message = providerBusy
+    ? "The selected LLM provider is still busy. Retry or switch to LM Studio."
+    : raw;
+  chat.onServerError(message);
+  if (providerBusy) {
+    chat.setActivity("error", "Provider busy");
+    setCaption(message, "error");
+  }
+}
+
 function applyWakeNoiseGate() {
   if (!client) return;
   const detectorNeedsUngatedAudio =
@@ -1097,7 +1124,7 @@ chat.addEventListener("speak-replies-change", (e) => {
 chat.addEventListener("stop-generation", () => {
   client?.cancelResponse();
   cancelOfficeWork("Generation stopped.");
-  wakeController.setBusy(false);
+  setWakeBusy("turn", false);
   chat.setActivity("idle", "Stopped");
 });
 chat.addEventListener("camera-snapshot", () => {
@@ -1376,6 +1403,10 @@ function currentVisionIntervalMs() {
   return Math.min(30000, Math.max(500, Math.round(value)));
 }
 
+function voiceTurnActive() {
+  return currentState === "user-speaking" || currentState === "processing" || currentState === "ai-speaking";
+}
+
 function latestVisionObservation() {
   const latest = visionObservations[visionObservations.length - 1] || "";
   return latest.replace(/^\[[^\]]+\]\s*/, "");
@@ -1443,7 +1474,9 @@ function syncVisionPanel() {
 
   const entryLabel = visionObservations.length === 1 ? "entry" : "entries";
   const injection = client && LIVE_STATES.has(currentState)
-    ? "injected into live LLM instructions"
+    ? voiceTurnActive()
+      ? "queued for the next LLM turn"
+      : "injected into live LLM instructions"
     : "kept for the next active LLM session";
   visionPipMeta.textContent = hasContext
     ? `${visionObservations.length} context ${entryLabel} - last update ${visionAgeLabel()} - ${injection}`
@@ -1501,7 +1534,7 @@ function rememberVisionObservation(text) {
   visionObserverLastAt = Date.now();
   visionObserverState = "live";
   visionObserverLastError = "";
-  if (client && LIVE_STATES.has(currentState)) {
+  if (client && currentState === "listening") {
     client.updateSession({ instructions: effectiveInstructions() });
   }
   syncToolsUi();
@@ -1509,7 +1542,7 @@ function rememberVisionObservation(text) {
 }
 
 async function runVisionObserverTick() {
-  if (visionObserverInFlight || document.hidden) return;
+  if (visionObserverInFlight || document.hidden || voiceTurnActive()) return;
   if (!toolsEnabled.visual_observer || !visionConfig.enabled || !visionConfig.configured || visionConfig.healthy === false) return;
   const image = captureSnapshot();
   if (!image) {
@@ -2544,7 +2577,7 @@ async function fetchWakeWordConfig() {
       status: cleanString(json.status) || "unknown",
       message: cleanString(json.message),
       phrase: cleanString(json.phrase) || "Hey Eva",
-      followupMs: Math.max(5_000, Number(json.followupMs) || 20_000),
+      followupMs: Math.max(5_000, Number(json.followupMs) || 60_000),
     };
   } catch (err) {
     wakeConfig = {
@@ -3548,7 +3581,6 @@ function wireRealtimeClient(c) {
   c.addEventListener("response-finished", (e) => {
     const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
     chat.onResponseFinished(detail);
-    wakeController.setBusy(false);
   });
   c.addEventListener("response-queued", (e) => {
     const { pending } = /** @type {CustomEvent<{ pending: number }>} */ (e).detail;
@@ -3556,15 +3588,16 @@ function wireRealtimeClient(c) {
   });
   c.addEventListener("response-requested", () => {
     chat.setActivity("processing", "Thinking");
-    wakeController.setBusy(true);
+    setWakeBusy("turn", true);
   });
   c.addEventListener("toolcall", (e) => {
     const { name, arguments: args, callId } = /** @type {CustomEvent<{ name: string; arguments: string; callId: string }>} */ (e).detail;
-    wakeController.setBusy(true);
+    const wakeReason = `tool:${callId || "anonymous"}:${++wakeToolSequence}`;
+    setWakeBusy(wakeReason, true);
     chat.onToolCall(name, args, callId);
     void runTool(name, args, callId).then(({ output, image }) => {
       chat.onToolResult(name, args, output, image, callId);
-    });
+    }).finally(() => setWakeBusy(wakeReason, false));
   });
   c.addEventListener("error", (e) => {
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
@@ -3577,9 +3610,7 @@ function wireRealtimeClient(c) {
   });
   c.addEventListener("server-error", (e) => {
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
-    const msg = detail.error instanceof Error ? detail.error.message : String(detail.error);
-    console.warn("[main] server error (non-fatal):", msg);
-    chat.onServerError(msg);
+    handleRealtimeServerError(detail);
   });
   c.addEventListener("session", (e) => {
     const info = /** @type {CustomEvent<{ info: import("./ws/s2s-ws-client.js").WsSessionInfo }>} */ (e).detail.info;
@@ -3801,7 +3832,6 @@ async function doStart(audioContext = null) {
   c.addEventListener("response-finished", (e) => {
     const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
     chat.onResponseFinished(detail);
-    wakeController.setBusy(false);
   });
   c.addEventListener("response-queued", (e) => {
     const { pending } = /** @type {CustomEvent<{ pending: number }>} */ (e).detail;
@@ -3809,18 +3839,19 @@ async function doStart(audioContext = null) {
   });
   c.addEventListener("response-requested", () => {
     chat.setActivity("processing", "Thinking");
-    wakeController.setBusy(true);
+    setWakeBusy("turn", true);
   });
 
   c.addEventListener("toolcall", (e) => {
     const { name, arguments: args, callId } = /** @type {CustomEvent<{ name: string; arguments: string; callId: string }>} */ (e).detail;
-    wakeController.setBusy(true);
+    const wakeReason = `tool:${callId || "anonymous"}:${++wakeToolSequence}`;
+    setWakeBusy(wakeReason, true);
     chat.onToolCall(name, args, callId);
     // Execute the tool, then push it to the conversation once the result is in,
     // so the toggle shows both the call input and its output together.
     void runTool(name, args, callId).then(({ output, image }) => {
       chat.onToolResult(name, args, output, image, callId);
-    });
+    }).finally(() => setWakeBusy(wakeReason, false));
   });
   c.addEventListener("error", (e) => {
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
@@ -3835,9 +3866,7 @@ async function doStart(audioContext = null) {
     // Non-fatal: the backend reported an error mid-session. Log it, keep the
     // socket and the conversation alive (the model can recover on its own).
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
-    const msg = detail.error instanceof Error ? detail.error.message : String(detail.error);
-    console.warn("[main] server error (non-fatal):", msg);
-    chat.onServerError(msg);
+    handleRealtimeServerError(detail);
   });
   c.addEventListener("session", (e) => {
     const info = /** @type {CustomEvent<{ info: import("./ws/s2s-ws-client.js").WsSessionInfo }>} */ (e).detail.info;
@@ -3965,27 +3994,36 @@ function onClientStatus(status) {
       chat.setActivity("connecting", "Ready to join");
       break;
     case "connected":
+      setWakeBusy("turn", false);
       setState("listening");
+      if (toolsEnabled.visual_observer && visionObservations.length) {
+        client?.updateSession({ instructions: effectiveInstructions() });
+      }
       if (!micStream) setCaption("Chat connected", "muted");
       chat.setActivity("idle", micStream ? "Listening" : "Ready");
       break;
     case "user-speaking":
+      setWakeBusy("turn", true);
       lastUserTurnWasTyped = false;
       setState("user-speaking");
       chat.setActivity("active", "Listening");
       break;
     case "processing":
+      setWakeBusy("turn", true);
       setState("processing");
       chat.setActivity("processing", "Thinking");
       break;
     case "ai-speaking":
+      setWakeBusy("turn", true);
       setState("ai-speaking");
       chat.setActivity("speaking", "Speaking");
       break;
     case "closed":
+      resetWakeBusy();
       // teardown() will move us to idle
       break;
     case "error":
+      resetWakeBusy();
       setState("error");
       chat.setActivity("error", "Connection error");
       break;
@@ -3994,6 +4032,7 @@ function onClientStatus(status) {
 
 async function teardown() {
   cancelOfficeWork("Conversation disconnected.");
+  resetWakeBusy();
   wakeController.disconnect();
   wakeLastError = "";
   stopHeartbeat();
@@ -4030,11 +4069,18 @@ async function teardown() {
 function onFatalError(err) {
   console.error("[main] fatal:", err);
   setState("error");
-  const message = err instanceof Error ? err.message : String(err);
-  setCaption(truncateError(message), "error");
-  void teardown().catch(() => {
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = /WebSocket (?:closed \(1006\)|failed to open)/i.test(raw)
+    ? "Connection lost. Tap to reconnect."
+    : truncateError(raw);
+  setCaption(message, "error");
+  chat.setActivity("error", message);
+  void teardown().catch((teardownError) => {
+    console.warn("[main] error cleanup failed:", teardownError);
+  }).finally(() => {
     setState("error");
-    setCaption(truncateError(message), "error");
+    setCaption(message, "error");
+    chat.setActivity("error", message);
   });
 }
 

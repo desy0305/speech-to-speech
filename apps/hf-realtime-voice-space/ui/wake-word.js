@@ -30,7 +30,7 @@ export class WakeWordController extends EventTarget {
     this._configured = false;
     this._healthy = false;
     this._phrase = "Hey Eva";
-    this._followupMs = 20_000;
+    this._followupMs = 60_000;
     this._state = /** @type {WakeState} */ ("off");
     this._busy = false;
     this._detectorReady = false;
@@ -55,7 +55,7 @@ export class WakeWordController extends EventTarget {
     this._healthy = config.healthy !== false;
     this._phrase = String(config.phrase || "Hey Eva").trim() || "Hey Eva";
     const followup = Number(config.followupMs);
-    this._followupMs = Number.isFinite(followup) ? Math.max(5_000, Math.min(120_000, followup)) : 20_000;
+    this._followupMs = Number.isFinite(followup) ? Math.max(5_000, Math.min(120_000, followup)) : 60_000;
     if (!this.shouldGate) {
       this.disconnect();
       this._setState("off");
@@ -175,6 +175,7 @@ export class WakeWordController extends EventTarget {
     if (this._sleepTimer) this._clearTimeout(this._sleepTimer);
     this._sleepTimer = this._setTimeout(() => {
       this._sleepTimer = 0;
+      if (this._busy || this._state !== "awake") return;
       this.sleep();
     }, this._followupMs);
   }

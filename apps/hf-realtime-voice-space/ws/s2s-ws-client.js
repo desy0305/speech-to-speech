@@ -182,6 +182,8 @@ export class S2sWsRealtimeClient extends EventTarget {
     /** @type {WsStatus} */
     this._status = "idle";
     this._aiSpeaking = false;
+    this._playbackActive = false;
+    this._responseDoneWaitingForPlayback = false;
     /** @type {Set<string>} response_ids that have actually played audio, so the
      * UI can tell a barge-in cut (keep it) from a never-heard speculative
      * response (drop it). */
@@ -611,10 +613,14 @@ export class S2sWsRealtimeClient extends EventTarget {
    */
   _onPlaybackMessage(data) {
     if (data?.kind === "underrun") {
-      // Server stopped sending audio mid-response. Most likely the turn
-      // ended cleanly (a response.done usually arrives just before/after
-      // this). We let the state machine fall back to "connected" via the
-      // response.done event handler.
+      this._playbackActive = false;
+      this._aiSpeaking = false;
+      if (this._responseDoneWaitingForPlayback) {
+        this._responseDoneWaitingForPlayback = false;
+        if (!this._responseActive() && (this._status === "ai-speaking" || this._status === "processing")) {
+          this._setStatus("connected");
+        }
+      }
     }
   }
 
@@ -698,6 +704,8 @@ export class S2sWsRealtimeClient extends EventTarget {
         // even though we already flipped `_aiSpeaking` off, and that tail would
         // otherwise keep playing over the user's barge-in.
         this._playbackNode?.port.postMessage({ kind: "clear" });
+        this._playbackActive = false;
+        this._responseDoneWaitingForPlayback = false;
         this._aiSpeaking = false;
         this._setStatus("user-speaking");
         break;
@@ -725,7 +733,7 @@ export class S2sWsRealtimeClient extends EventTarget {
 
       case "response.audio.delta":
       case "response.output_audio.delta": {
-        this._pushAudioDelta(event.delta);
+        if (this._pushAudioDelta(event.delta)) this._playbackActive = true;
         const rid = event.response_id ?? event.response?.id;
         if (rid) this._audibleResponses.add(rid);
         if (!this._aiSpeaking) {
@@ -744,11 +752,14 @@ export class S2sWsRealtimeClient extends EventTarget {
       }
 
       case "response.done": {
-        this._aiSpeaking = false;
         // This response freed the slot (completion OR cancellation both arrive
         // as response.done). Decrement and, if a create was waiting, replay it.
         this._openResponses = Math.max(0, this._openResponses - 1);
-        if (this._status === "ai-speaking" || this._status === "processing") {
+        if (this._playbackActive) {
+          this._responseDoneWaitingForPlayback = true;
+          this._aiSpeaking = true;
+        } else if (this._status === "ai-speaking" || this._status === "processing") {
+          this._aiSpeaking = false;
           this._setStatus("connected");
         }
         // A response closes here for BOTH normal completion and cancellation
@@ -953,8 +964,8 @@ export class S2sWsRealtimeClient extends EventTarget {
 
   /** @param {string} b64 */
   _pushAudioDelta(b64) {
-    if (!this._playbackNode) return;
-    if (!b64) return;
+    if (!this._playbackNode) return false;
+    if (!b64) return false;
     const bytes = base64ToBytes(b64);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const samples = new Float32Array(bytes.byteLength / 2);
@@ -963,6 +974,7 @@ export class S2sWsRealtimeClient extends EventTarget {
       samples[i] = s < 0 ? s / 0x8000 : s / 0x7fff;
     }
     this._playbackNode.port.postMessage({ kind: "audio", samples }, [samples.buffer]);
+    return true;
   }
 
   /** @param {CloseEvent} ev */
@@ -1164,6 +1176,8 @@ export class S2sWsRealtimeClient extends EventTarget {
     this._createInFlightOpts = {};
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     this._playbackNode?.port.postMessage({ kind: "clear" });
+    this._playbackActive = false;
+    this._responseDoneWaitingForPlayback = false;
     this._aiSpeaking = false;
     this._send({ type: "response.cancel" });
   }

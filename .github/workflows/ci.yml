@@ -40,6 +40,12 @@ jobs:
       - run: uv sync --group dev
       - name: NLTK data (punkt_tab for sent_tokenize)
         run: uv run python -c "import nltk; nltk.download('punkt_tab')"
+      - name: Optional sidecar unit tests
+        run: |
+          uv run python deploy/office-agent/test_app.py
+          node --test tests/test_wake_word.mjs
+      - name: Local Compose validation
+        run: docker compose -f docker-compose.local.yml config --quiet
       - name: Pytest
         run: uv run pytest tests/ -x -q
 

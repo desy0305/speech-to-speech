@@ -7,7 +7,8 @@
 
 This fork adds a complete local browser voice assistant around the modular
 speech pipeline: realtime microphone/audio streaming, runtime LLM and speech
-backend selection, persistent MCP memory, and optional SmolVLM camera context.
+backend selection, persistent MCP memory, optional SmolVLM camera context,
+CPU wake-word gating, and an approval-based local Office agent.
 The original Python package and CLI remain available for custom deployments.
 
 ## 📖 Quick Index
@@ -47,6 +48,8 @@ LLM session without replacing that working audio stack.
 | Visual context | SmolVLM through local `llama-server` | Periodic webcam observations summarized into capped hidden session context |
 | Long-term memory | Docker MCP Memory | Persistent knowledge graph searched in both Bulgarian and English |
 | Tool gateway | Docker MCP gateway | Server-side allowlisted memory, browser, and reasoning tools |
+| Wake word | CPU-only Sherpa-ONNX KWS | Privacy gate that sends sleeping audio only to local keyword spotting |
+| Office agent | Isolated OfficeCLI sidecar | Typed document reads and one-shot approved writes inside `agent-workspace/` |
 
 ```mermaid
 flowchart LR
@@ -60,8 +63,10 @@ flowchart LR
     UIProxy -->|"Periodic JPEG frame"| Vision["Local SmolVLM observer"]
     Vision -->|"Scene observation"| UIProxy
     Browser -->|"Capped summary in session.update"| Speech
+    Browser -->|"Sleeping PCM only"| Wake["Local Sherpa wake detector"]
     UIProxy --> Gateway["Docker MCP gateway"]
     Gateway --> Memory["Persistent memory graph"]
+    UIProxy --> Office["Isolated local Office agent"]
 ```
 
 ### Context awareness
@@ -118,12 +123,19 @@ Docker MCP is optional and starts separately on the host:
 powershell -ExecutionPolicy Bypass -File .\scripts\mcp\start-mcp-gateway.ps1
 ```
 
+Wake-word and Office-agent profiles are also optional and disabled by default.
+Their pinned models, checksums, acceptance gate, workspace rules, approvals,
+resource limits, and rollback commands are documented in
+[`docs/wake-word-office-agent.md`](docs/wake-word-office-agent.md).
+
 ### Credential boundary
 
 - Keep real provider keys, the MCP bearer token, and HTTPS credentials only in
   `.env`; it is ignored by Git and loaded only into server-side containers.
 - The browser receives provider identifiers, model names, availability, and
   tool results, but not configured API keys or the MCP gateway token.
+- The Office service token remains between the UI server and its internal
+  sidecar; it is never included in browser configuration or model context.
 - Local certificates, runtime logs, downloaded model caches, and `.env` files
   are ignored and must not be committed.
 - Rotate a credential immediately if it was ever committed, even if a later

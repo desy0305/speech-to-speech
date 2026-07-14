@@ -146,6 +146,23 @@ If another computer cannot reach the proxy, allow the HTTPS port on the host:
 New-NetFirewallRule -DisplayName "HF Voice HTTPS 50056 LAN" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 50056 -RemoteAddress <LAN_CIDR> -Profile Private,Public
 ```
 
+## Optional Wake Word And Office Agent
+
+Two disabled-by-default, internal-only profiles can enrich the existing stack
+without replacing STT, LLM routing, TTS, MCP memory, or the visual observer:
+
+```powershell
+docker compose --env-file .env -f docker-compose.local.yml --profile wake-word up -d --build wake-word ui
+docker compose --env-file .env -f docker-compose.local.yml --profile office-agent up -d --build office-agent ui
+```
+
+Keep `WAKE_WORD_ENABLED=0` until a local human/room corpus passes the documented
+detection and false-trigger gate. The Office profile additionally requires a
+random `OFFICE_AGENT_TOKEN` and exposes writes only after one-shot UI approval.
+See [`wake-word-office-agent.md`](wake-word-office-agent.md) for pinned model and
+binary checksums, all environment settings, workspace rules, resource limits,
+tests, and rollback commands.
+
 ## Runtime Provider Switching
 
 The `lmstudio` Docker profile runs one speech stack and switches only the LLM

@@ -168,6 +168,20 @@ Set `VISION_OBSERVER_ENABLED=0` only when you want to hide the feature entirely.
 local OpenAI-style server such as LM Studio, set `SMOLVLM_API_KEY` to that local
 token.
 
+## Optional Wake Word And Office Agent
+
+The `wake-word` and `office-agent` profiles have no host ports and are disabled
+by default. The UI joins their internal Docker network only to proxy same-origin
+requests. Wake audio is fail-closed while sleeping. OfficeCLI's raw command MCP
+surface is not exposed; typed reads and exact one-shot approved writes are
+confined to `agent-workspace/`.
+
+Deployment values, pinned checksums, acceptance criteria, hardening, resource
+limits, and rollback commands are in
+[`wake-word-office-agent.md`](wake-word-office-agent.md). Keep the wake flag off
+until the target-room corpus passes, and generate a unique Office service token
+for every deployment.
+
 ## Memory And MCP
 
 MCP tools are exposed through the Docker MCP gateway. The app can show "gateway

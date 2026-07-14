@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { WakeWordController } from "../apps/hf-realtime-voice-space/ui/wake-word.js";
@@ -124,4 +125,13 @@ test("S2S mic router consumes sleeping audio before encoding or send", () => {
   client._send = () => { sends += 1; };
   client._onMicChunk(new ArrayBuffer(32));
   assert.equal(sends, 0);
+});
+
+test("HTTPS proxy preserves the wake word WebSocket upgrade", () => {
+  const nginx = readFileSync(new URL("../deploy/local-https/nginx.conf", import.meta.url), "utf8");
+  const location = nginx.match(/location = \/api\/wake-word\/stream \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(location, "missing exact wake word WebSocket location");
+  assert.match(location, /proxy_http_version 1\.1;/);
+  assert.match(location, /proxy_set_header Upgrade \$http_upgrade;/);
+  assert.match(location, /proxy_set_header Connection \$connection_upgrade;/);
 });
